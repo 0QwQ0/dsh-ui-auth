@@ -1,0 +1,8 @@
+# dsh-ui-auth bundle patch.
+# 本文件经 package.json 的 dsh.bundle.patch 声明，作为 profile 的 bundle 层
+# 在启动时应用（dsh plugin add/remove 自动维护 dsh.profile.bundles 名单）。
+# 该行同时驱动 Host 插件挂载（lib/index.js）与 dsh.client 客户端模块发现
+# （lib/client.js：设置面板「用户管理」）。
+- insert:
+    - id: dsh-ui-auth
+      name: dsh-ui-auth

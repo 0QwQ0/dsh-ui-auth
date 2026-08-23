@@ -1,0 +1,50 @@
+{
+  "name": "dsh-ui-auth",
+  "version": "0.3.3",
+  "description": "DSH Web UI 认证网关：登录保护全部 HTTP/WS 接口，设置面板提供用户管理（管理员可管理用户）。",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "test": "node --check lib/index.js && node --check lib/client.js && node test/crypto-vectors.cjs && node test/client-smoke.cjs && node test/host-smoke.mjs",
+    "prepack": "node --check lib/index.js && node --check lib/client.js && node test/crypto-vectors.cjs && node test/client-smoke.cjs && node test/host-smoke.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "auth",
+    "authentication",
+    "login"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0QwQ0/dsh-ui-auth.git"
+  },
+  "license": "MIT"
+}

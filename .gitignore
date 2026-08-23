@@ -1,0 +1,13 @@
+# 打包产物不入库
+*.tgz
+
+# Node
+node_modules/
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 运行时产物（由插件在首次启动生成，不应入库）
+dsh-ui-auth-bootstrap.txt
+dsh-ui-auth-init.log
