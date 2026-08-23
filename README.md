@@ -91,6 +91,8 @@ dsh plugin --profile web remove dsh-ui-auth
 
 ## 已知边界 / 建议
 
+- 公网安全验证详见 [SECURITY.md](SECURITY.md)（威胁模型、75 项安全用例矩阵、
+  OWASP Top 10 覆盖率、残余风险与部署加固清单）；本地复现：`node test/security-suite.mjs`。
 - Cookie 未加 `Secure` 标记：公网部署请放在 HTTPS 反向代理之后，由代理终结 TLS
   并在转发时保留 Host，DSH 自身按 `127.0.0.1` 或内网监听即可。
 - 登录限流按 TCP 源 IP（`req.socket.remoteAddress`）：反向代理场景下会聚合为代理
