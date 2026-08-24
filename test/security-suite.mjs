@@ -6,7 +6,7 @@
 // ============================================================================
 import { EventEmitter } from 'node:events'
 import { readFileSync } from 'node:fs'
-import { apply } from '../lib/index.js'
+import { apply, readLockConfig, clientIp } from '../lib/index.js'
 
 const HOST_SRC = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
 const CLIENT_SRC = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
@@ -139,15 +139,18 @@ function buildStore() {
 const server = buildServer()
 const { records, creds } = buildStore()
 const bootstrapFile = []
+let apiProxyCurrent = undefined // WS 隔离组会注入 apiProxy mock
 const fsMock = {
   async resolve(p) { return { path: p } },
   async writeText(t, c) { bootstrapFile.push(c) },
+  async readText() { throw Object.assign(new Error('not found'), { code: 'FS_NOT_FOUND' }) },
 }
 const ctx = {
   get(n) {
     if (n === 'credentials') return creds
     if (n === 'fs') return fsMock
     if (n === 'webServer') return { server }
+    if (n === 'apiProxy') return apiProxyCurrent
     return undefined
   },
   effect() {},
@@ -368,17 +371,39 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
   check('HTTP', '未认证页面 → 302 登录页', r.status === 302)
 }
 {
-  // WebSocket 升级门控（mock socket 驱动真实 gateUp）
-  const fakeSocket = () => ({ written: '', destroyed: false, write(c) { this.written += c.toString(); return true }, end() {}, destroy() { this.destroyed = true }, setKeepAlive() {}, setTimeout() {} })
+  // WebSocket 升级门控（mock socket 驱动真实 gateUp；事件流升级走代理）
+  const fakeSocket = (opts = {}) => ({
+    written: [], destroyed: false, ended: false,
+    write(c) { this.written.push(Buffer.from(c)); return true },
+    end() { this.ended = true }, destroy() { this.destroyed = true },
+    setKeepAlive() {}, setTimeout() {}, on() {}, once() {}, removeListener() {},
+  })
+  const upgradeReq = (path, cookie, extra) => {
+    const r = makeReq('GET', path, cookie, undefined)
+    r.headers = { ...r.headers, ...extra }
+    return r
+  }
+  const WS_KEY = 'dGhlIHNhbXBsZSBub25jZQ=='
+  // 1) 未认证 → 销毁
   const s1 = fakeSocket()
-  server.emit('upgrade', makeReq('GET', '/api/events.mux', undefined, undefined), s1, Buffer.alloc(0))
+  server.emit('upgrade', upgradeReq('/api/events.mux', undefined, { 'sec-websocket-key': WS_KEY }), s1, Buffer.alloc(0))
   check('HTTP', 'WS 未认证升级 → 立即销毁连接', s1.destroyed === true)
-  const s2 = fakeSocket()
-  server.emit('upgrade', makeReq('GET', '/api/events.mux', test1Cookie, undefined), s2, Buffer.alloc(0))
-  check('HTTP', 'WS 有效会话升级 → 放行（不销毁）', s2.destroyed === false)
+  // 2) /auth/* → 销毁
   const s3 = fakeSocket()
-  server.emit('upgrade', makeReq('GET', '/auth/ws', undefined, undefined), s3, Buffer.alloc(0))
+  server.emit('upgrade', upgradeReq('/auth/ws', undefined, { 'sec-websocket-key': WS_KEY }), s3, Buffer.alloc(0))
   check('HTTP', 'WS 指向 /auth/* → 销毁（不暴露认证端点）', s3.destroyed === true)
+  // 3) 非事件流升级 + 有效会话 → 放行（转发原监听器）
+  const s4 = fakeSocket()
+  server.emit('upgrade', upgradeReq('/api/other-ws', test1Cookie, { 'sec-websocket-key': WS_KEY }), s4, Buffer.alloc(0))
+  check('HTTP', '非事件流 WS 有效会话升级 → 放行（不销毁）', s4.destroyed === false)
+  // 4) 事件流升级 + 有效会话 + apiProxy 缺失 → fail-closed 销毁（绝不透传全量帧）
+  const s5 = fakeSocket()
+  server.emit('upgrade', upgradeReq('/api/events.mux', test1Cookie, { 'sec-websocket-key': WS_KEY }), s5, Buffer.alloc(0))
+  check('HTTP', '事件流升级在 apiProxy 缺失时 fail-closed（销毁，不透传）', s5.destroyed === true)
+  // 5) 事件流升级缺 Sec-WebSocket-Key → 销毁
+  const s6 = fakeSocket()
+  server.emit('upgrade', upgradeReq('/api/events.mux', test1Cookie), s6, Buffer.alloc(0))
+  check('HTTP', '事件流升级缺 WebSocket-Key → 销毁', s6.destroyed === true)
 }
 {
   // fail-closed：存储故障时非认证请求 503
@@ -400,6 +425,124 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
   const r = makeRes()
   serverBad.emit('request', makeReq('GET', '/', undefined, undefined), r)
   check('HTTP', 'fail-closed：存储故障时页面请求 503（不开放）', r.status === 503)
+  // init 未完成/失败时，登录与 RPC 也返回明确的 503（而非误导性 401/500）
+  const rl = makeRes()
+  serverBad.emit('request', makeReq('POST', '/auth/login', undefined, JSON.stringify({ username: 'admin', password: 'x' })), rl)
+  await settle()
+  check('HTTP', '初始化未完成时登录 503（提示稍后重试，非 401）', rl.status === 503 && parseJson(rl).error === '服务初始化中，请稍后重试')
+  const rr = makeRes()
+  serverBad.emit('request', makeReq('POST', '/auth/rpc/me', 'bogus', '{}'), rr)
+  await settle()
+  check('HTTP', '初始化未完成时 RPC 503', rr.status === 503)
+}
+
+// ==================== K. WS 事件流按用户隔离（0.4.0） ====================
+{
+  const decodeFrames = (buffers) => {
+    let bytes = Buffer.concat(buffers)
+    const hs = bytes.indexOf('\r\n\r\n')
+    if (hs !== -1) bytes = bytes.slice(hs + 4) // 跳过 101 握手响应
+    const out = []
+    let off = 0
+    while (off + 2 <= bytes.length) {
+      const b0 = bytes[off], b1 = bytes[off + 1]
+      const opcode = b0 & 0x0f
+      let len = b1 & 0x7f
+      let hlen = 2
+      if (len === 126) { if (off + 4 > bytes.length) break; len = (bytes[off + 2] << 8) | bytes[off + 3]; hlen = 4 }
+      else if (len === 127) { if (off + 10 > bytes.length) break; hlen = 10; len = Number(bytes.readBigUInt64BE(off + 2)) }
+      if (off + hlen + len > bytes.length) break
+      out.push({ opcode, text: opcode === 1 ? bytes.slice(off + hlen, off + hlen + len).toString('utf8') : '' })
+      off += hlen + len
+    }
+    return out
+  }
+  const fakeSocket = () => ({ written: [], destroyed: false, ended: false, write(c) { this.written.push(Buffer.from(c)); return true }, end() { this.ended = true }, destroy() { this.destroyed = true }, setKeepAlive() {}, setTimeout() {}, on() {}, once() {}, removeListener() {} })
+  const makeIter = (frames, signal) => (async function* () {
+    for (const f of frames) {
+      if (signal.aborted) return
+      yield f
+    }
+    if (!signal.aborted) await new Promise(() => {})
+  })()
+  const muxFrames = [
+    { rpcId: 'r1', payload: { type: 'session/subscribed', sessionId: 's-test1', lastSeq: 0 } },
+    { rpcId: 'r2', payload: { type: 'session/subscribed', sessionId: 's-admin', lastSeq: 5 } },
+    { rpcId: 'r3', payload: { type: 'session/event', sessionId: 's-admin', event: { type: 'user/message', data: { source: { kind: 'user' }, content: 'admin-secret' }, time: 1 } } },
+    { rpcId: 'r4', payload: { type: 'session/event', sessionId: 's-test1', event: { type: 'user/message', data: { source: { kind: 'user' }, content: 'mine' }, time: 2 } } },
+    { rpcId: 'r5', payload: { type: 'stream/error', error: { code: 'internal', message: 'x', details: {} } } },
+  ]
+  const hostFrames = [
+    { rpcId: 'h1', payload: { type: 'host/session-status', sessionId: 's-test1', running: true } },
+    { rpcId: 'h2', payload: { type: 'host/session-status', sessionId: 's-admin', running: true } },
+    { rpcId: 'h3', payload: { type: 'host/workspace-changed', workspace: { workspaceId: 'w-admin', path: '/a', title: 'A', sessionIds: [], createdAt: '', updatedAt: '' } } },
+    { rpcId: 'h4', payload: { type: 'host/workspace-order-changed', workspaceIds: ['w-admin', 'w-test1'] } },
+    { rpcId: 'h5', payload: { type: 'host/archived-sessions-changed', archivedSessionIds: ['s-admin', 's-test1'] } },
+    { rpcId: 'h6', payload: { type: 'host/remote-event', event: 'session/whatever', args: [{ secret: 1 }] } },
+  ]
+  apiProxyCurrent = { events: { mux: (req, sig) => makeIter(muxFrames, sig), host: (req, sig) => makeIter(hostFrames, sig) } }
+  const upgrade = (path, cookie, socket) => {
+    const r = makeReq('GET', path, cookie, undefined)
+    r.headers = { ...r.headers, 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==' }
+    server.emit('upgrade', r, socket, Buffer.alloc(0))
+  }
+  const settleWs = () => new Promise((r) => setTimeout(r, 150))
+  const wsPromises = []
+  wsPromises.push((async () => {
+    // A) mux：test1 只收到自己的会话帧 + 全局 stream/error；握手正确
+    const s = fakeSocket()
+    upgrade('/api/events.mux', test1Cookie, s)
+    await settleWs()
+    const raw = Buffer.concat(s.written).toString('utf8')
+    const js = decodeFrames(s.written).filter((f) => f.opcode === 1).map((f) => JSON.parse(f.text))
+    check('WS-ISO', '事件流握手 101 + 正确 Sec-WebSocket-Accept（RFC 6455 向量）', raw.startsWith('HTTP/1.1 101 Switching Protocols') && raw.includes('Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo='))
+    const nonGlobal = js.filter((f) => (f.payload || {}).type !== 'stream/error')
+    check('WS-ISO', 'mux 过滤：普通用户收到的帧全部属于自己', nonGlobal.length > 0 && nonGlobal.every((f) => (f.payload || {}).sessionId === 's-test1'))
+    check('WS-ISO', 'mux 过滤：他人会话帧（subscribed/event）在网络层被丢弃', !js.some((f) => (f.payload || {}).sessionId === 's-admin'))
+    check('WS-ISO', 'mux 过滤：自己的事件帧放行', js.some((f) => (f.payload || {}).rpcId === undefined && (f.payload || {}).type === 'session/event' && (f.payload || {}).sessionId === 's-test1'))
+    check('WS-ISO', 'mux 过滤：全局 stream/error 帧放行', js.some((f) => (f.payload || {}).type === 'stream/error'))
+  })())
+  wsPromises.push((async () => {
+    // B) host：test1 按 session/workspace 归属过滤；remote-event 丢弃；数组帧逐元素过滤
+    const s = fakeSocket()
+    upgrade('/api/events.host', test1Cookie, s)
+    await settleWs()
+    const js = decodeFrames(s.written).filter((f) => f.opcode === 1).map((f) => JSON.parse(f.text))
+    check('WS-ISO', 'host 过滤：他人会话状态帧丢弃', !js.some((f) => (f.payload || {}).sessionId === 's-admin'))
+    check('WS-ISO', 'host 过滤：他人 workspace 帧丢弃', !js.some((f) => (f.payload || {}).workspace && (f.payload.workspace.workspaceId === 'w-admin')))
+    check('WS-ISO', 'host 过滤：remote-event 对普通用户丢弃', !js.some((f) => (f.payload || {}).type === 'host/remote-event'))
+    const order = js.find((f) => (f.payload || {}).type === 'host/workspace-order-changed')
+    check('WS-ISO', 'host 过滤：workspace-order-changed 数组只含自己的', order !== undefined && JSON.stringify(order.payload.workspaceIds) === JSON.stringify(['w-test1']))
+    const arch = js.find((f) => (f.payload || {}).type === 'host/archived-sessions-changed')
+    check('WS-ISO', 'host 过滤：archived-sessions-changed 数组只含自己的', arch !== undefined && JSON.stringify(arch.payload.archivedSessionIds) === JSON.stringify(['s-test1']))
+    check('WS-ISO', 'host 过滤：自己的会话状态帧放行', js.some((f) => (f.payload || {}).type === 'host/session-status' && (f.payload || {}).sessionId === 's-test1'))
+  })())
+  wsPromises.push((async () => {
+    // C) admin：host 全量可见（remote-event + 他人会话帧放行）
+    const s = fakeSocket()
+    upgrade('/api/events.host', adminCookie, s)
+    await settleWs()
+    const js = decodeFrames(s.written).filter((f) => f.opcode === 1).map((f) => JSON.parse(f.text))
+    check('WS-ISO', 'host 过滤：管理员 remote-event 放行', js.some((f) => (f.payload || {}).type === 'host/remote-event'))
+    check('WS-ISO', 'host 过滤：管理员可见他人会话帧（不受过滤）', js.some((f) => (f.payload || {}).sessionId === 's-admin'))
+  })())
+  apiProxyCurrent = undefined
+  await Promise.all(wsPromises)
+}
+
+// ==================== L. 限流配置（0.4.0 可配置化） ====================
+{
+  check('CFG', '默认限流配置：5 次 / 30s / 不信任 XFF',
+    JSON.stringify(readLockConfig({})) === JSON.stringify({ maxFails: 5, lockMs: 30000, trustProxy: false }))
+  check('CFG', '环境变量覆盖限流配置',
+    JSON.stringify(readLockConfig({ DSH_AUTH_MAX_FAILS: '3', DSH_AUTH_LOCK_MS: '5000', DSH_AUTH_TRUST_PROXY: '1' })) === JSON.stringify({ maxFails: 3, lockMs: 5000, trustProxy: true }))
+  check('CFG', '非法配置值回退默认', readLockConfig({ DSH_AUTH_MAX_FAILS: 'abc', DSH_AUTH_LOCK_MS: '-1' }).maxFails === 5 && readLockConfig({ DSH_AUTH_LOCK_MS: '-1' }).lockMs === 30000)
+  check('CFG', '默认不信任 X-Forwarded-For（伪造 XFF 不生效）',
+    clientIp({ socket: { remoteAddress: '127.0.0.1' }, headers: { 'x-forwarded-for': '203.0.113.9' } }, false) === '127.0.0.1')
+  check('CFG', 'trustProxy 时取 XFF 第一个（反代场景按真实客户端计数）',
+    clientIp({ socket: { remoteAddress: '127.0.0.1' }, headers: { 'x-forwarded-for': '203.0.113.9, 10.0.0.1' } }, true) === '203.0.113.9')
+  check('CFG', 'trustProxy 但无 XFF 时回退 socket 地址',
+    clientIp({ socket: { remoteAddress: '192.0.2.7' }, headers: {} }, true) === '192.0.2.7')
 }
 
 // ==================== F. 信息泄露 ====================
@@ -552,7 +695,7 @@ for (const r of results) {
   if (r.pass) byCategory[r.category].pass++
 }
 console.log('\n================ 安全验证汇总 ================')
-const order = ['AUTH', 'SESSION', 'INJ', 'CSRF', 'HTTP', 'INFO', 'AUTHZ', 'ISO', 'AVAIL', 'DEPLOY']
+const order = ['AUTH', 'SESSION', 'INJ', 'CSRF', 'HTTP', 'INFO', 'AUTHZ', 'ISO', 'AVAIL', 'DEPLOY', 'WS-ISO', 'CFG']
 for (const c of order) {
   const s = byCategory[c] || { total: 0, pass: 0 }
   const flag = s.pass === s.total ? 'PASS' : 'FAIL'

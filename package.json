@@ -1,6 +1,6 @@
 {
   "name": "dsh-ui-auth",
-  "version": "0.3.4",
+  "version": "0.4.0",
   "description": "DSH Web UI 认证网关：登录保护全部 HTTP/WS 接口，设置面板提供用户管理（管理员可管理用户）。",
   "type": "module",
   "main": "./lib/index.js",

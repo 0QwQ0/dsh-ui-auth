@@ -30,11 +30,12 @@ const creds = {
   async deleteRecord(key) { records.delete(key) },
 }
 
-// ---- mock fs (captures the bootstrap file so the test can read the admin password) ----
-let bootstrapFile = null
+// ---- mock fs (multi-file map; bootstrap file captured for the admin password) ----
+const fsFiles = new Map()
 const fsMock = {
   async resolve(p) { return { path: p } },
-  async writeText(target, content) { bootstrapFile = content },
+  async writeText(target, content) { fsFiles.set(target.path, content) },
+  async readText(target) { const v = fsFiles.get(target.path); if (v === undefined) throw Object.assign(new Error('not found'), { code: 'FS_NOT_FOUND' }); return v },
 }
 
 // ---- mock ctx ----
@@ -117,7 +118,8 @@ apply(ctx)
 
 // ---- wait for async init + bootstrap ----
 await new Promise((r) => setTimeout(r, 300))
-check('bootstrap file written', bootstrapFile !== null)
+const bootstrapFile = fsFiles.get('dsh-ui-auth-bootstrap.txt')
+check('bootstrap file written', bootstrapFile !== undefined)
 const pwMatch = bootstrapFile ? /密码:\s+(\S+)/.exec(bootstrapFile) : null
 const adminPassword = pwMatch ? pwMatch[1] : null
 check('admin password captured', adminPassword !== null, 'bootstrap=' + bootstrapFile)
@@ -660,6 +662,137 @@ if (disposers.length > 0) {
     const r = await get4(adminCookie4, '/api/session.export?sessionId=s-admin')
     check('iso: admin session.export passes', r.status === 200 && originalCalls4 === before + 1, 'status=' + r.status)
   }
+}
+
+// ---- 16) 会话持久化（0.4.0：重启不掉线） ----
+// 主场景 12 已卸载主网关，本场景用独立 server/ctx（共享 credentials 与 fs 存储）
+// 完整模拟"登录 -> 落盘 -> 重启 -> 免登录恢复 -> 过期不恢复"。
+{
+  const serverR = new EventEmitter()
+  serverR.on('request', () => {})
+  const ctxR = {
+    get(n) {
+      if (n === 'credentials') return creds
+      if (n === 'fs') return fsMock
+      if (n === 'webServer') return { server: serverR }
+      return undefined
+    },
+    effect() {},
+    interval() { return () => {} },
+    timeout(ms) { return new Promise((r) => setTimeout(r, ms)) },
+  }
+  apply(ctxR)
+  await new Promise((r) => setTimeout(r, 400)) // 等 init
+  const loginRes = await new Promise((resolve) => {
+    const r = makeRes()
+    serverR.emit('request', makeReq('POST', '/auth/login', undefined, JSON.stringify({ username: 'admin', password: adminPassword })), r)
+    setTimeout(() => resolve(r), 80)
+  })
+  const cookie16 = cookieOf(loginRes)
+  check('sess: 登录成功', cookie16 !== undefined, 'status=' + loginRes.status + ' body=' + loginRes.body)
+  await new Promise((r) => setTimeout(r, 100)) // 等 persistSessions 落盘
+  const file = fsFiles.get('dsh-ui-auth-sessions.json')
+  check('sess: 登录后会话文件已落盘', file !== undefined && file.includes('"sessions"') && file.includes(cookie16), 'file=' + (file !== undefined ? file.slice(0, 90) : '(missing)'))
+  // 模拟"重启"：新 server + 新 ctx（共享同一 credentials 与 fs 存储），再 apply 一次
+  const serverR2 = new EventEmitter()
+  serverR2.on('request', () => {})
+  const ctxR2 = {
+    get(n) {
+      if (n === 'credentials') return creds
+      if (n === 'fs') return fsMock
+      if (n === 'webServer') return { server: serverR2 }
+      return undefined
+    },
+    effect() {},
+    interval() { return () => {} },
+    timeout(ms) { return new Promise((r) => setTimeout(r, ms)) },
+  }
+  apply(ctxR2)
+  await new Promise((r) => setTimeout(r, 400)) // 等 init（含 loadSessions）
+  const meRes = await new Promise((resolve) => {
+    const r = makeRes()
+    serverR2.emit('request', makeReq('POST', '/auth/rpc/me', cookie16, '{}'), r)
+    setTimeout(() => resolve(r), 80)
+  })
+  check('sess: 重启后原 cookie 免登录恢复会话（me 200）', meRes.status === 200, 'status=' + meRes.status + ' body=' + meRes.body)
+  // 过期会话不恢复：把磁盘上的 expiresAt 改为过去，再"重启"
+  const data = JSON.parse(file)
+  for (const token of Object.keys(data.sessions)) data.sessions[token].expiresAt = 1
+  fsFiles.set('dsh-ui-auth-sessions.json', JSON.stringify(data))
+  const serverR3 = new EventEmitter()
+  serverR3.on('request', () => {})
+  const ctxR3 = {
+    get(n) {
+      if (n === 'credentials') return creds
+      if (n === 'fs') return fsMock
+      if (n === 'webServer') return { server: serverR3 }
+      return undefined
+    },
+    effect() {},
+    interval() { return () => {} },
+    timeout(ms) { return new Promise((r) => setTimeout(r, ms)) },
+  }
+  apply(ctxR3)
+  await new Promise((r) => setTimeout(r, 400))
+  const meRes2 = await new Promise((resolve) => {
+    const r = makeRes()
+    serverR3.emit('request', makeReq('POST', '/auth/rpc/me', cookie16, '{}'), r)
+    setTimeout(() => resolve(r), 80)
+  })
+  check('sess: 过期会话不恢复（me 401）', meRes2.status === 401, 'status=' + meRes2.status)
+}
+
+// ---- 17) 管理员操作审计（0.4.0：JSONL） ----
+{
+  const serverA = new EventEmitter()
+  serverA.on('request', () => {})
+  const ctxA = {
+    get(n) {
+      if (n === 'credentials') return creds
+      if (n === 'fs') return fsMock
+      if (n === 'webServer') return { server: serverA }
+      return undefined
+    },
+    effect() {},
+    interval() { return () => {} },
+    timeout(ms) { return new Promise((r) => setTimeout(r, ms)) },
+  }
+  apply(ctxA)
+  await new Promise((r) => setTimeout(r, 400))
+  const loginA = await new Promise((resolve) => {
+    const r = makeRes()
+    serverA.emit('request', makeReq('POST', '/auth/login', undefined, JSON.stringify({ username: 'admin', password: adminPassword })), r)
+    setTimeout(() => resolve(r), 80)
+  })
+  const cookieA = cookieOf(loginA)
+  check('audit: admin 登录成功', cookieA !== undefined)
+  const createRes = await new Promise((resolve) => {
+    const r = makeRes()
+    serverA.emit('request', makeReq('POST', '/auth/rpc/createUser', cookieA, JSON.stringify({ username: 'carol', password: 'carol-pw-1234', role: 'user' })), r)
+    setTimeout(() => resolve(r), 80)
+  })
+  await new Promise((r) => setTimeout(r, 120))
+  const auditFile = fsFiles.get('dsh-ui-auth-audit.jsonl')
+  check('audit: 成功操作已记录（createUser carol）', auditFile !== undefined && auditFile.includes('createUser') && auditFile.includes('carol'), 'audit=' + (auditFile !== undefined ? auditFile.slice(0, 120) : '(missing)'))
+  // 普通用户越权尝试
+  const carolLogin = await new Promise((resolve) => {
+    const r = makeRes()
+    serverA.emit('request', makeReq('POST', '/auth/login', undefined, JSON.stringify({ username: 'carol', password: 'carol-pw-1234' })), r)
+    setTimeout(() => resolve(r), 80)
+  })
+  const carolCookie = cookieOf(carolLogin)
+  check('audit: carol 登录成功', carolCookie !== undefined)
+  const deniedRes = await new Promise((resolve) => {
+    const r = makeRes()
+    serverA.emit('request', makeReq('POST', '/auth/rpc/createUser', carolCookie, JSON.stringify({ username: 'dave', password: 'dave-pw-1234' })), r)
+    setTimeout(() => resolve(r), 80)
+  })
+  check('audit: 越权尝试 403', deniedRes.status === 403)
+  await new Promise((r) => setTimeout(r, 120))
+  const auditFile2 = fsFiles.get('dsh-ui-auth-audit.jsonl')
+  check('audit: 越权尝试已记录（denied:true）', auditFile2 !== undefined && auditFile2.includes('"denied":true'), 'audit=' + (auditFile2 !== undefined ? auditFile2.slice(0, 160) : '(missing)'))
+  const lines = (auditFile2 !== undefined ? auditFile2.trim().split('\n') : [])
+  check('audit: 每一行都是合法 JSON（JSONL）', lines.length >= 2 && lines.every((l) => { try { JSON.parse(l); return true } catch (e) { return false } }))
 }
 
 console.log(failures === 0 ? '\nALL HOST SMOKE TESTS PASSED' : `\n${failures} FAILURES`)
