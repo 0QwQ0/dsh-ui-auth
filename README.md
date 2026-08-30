@@ -1,5 +1,7 @@
 # dsh-ui-auth — DSH Web UI 认证网关插件
 
+[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
+
 在 DSH Web UI 前套一层用户名/密码登录校验，未登录用户无法访问任何页面、API
 或 WebSocket 通道。
 
