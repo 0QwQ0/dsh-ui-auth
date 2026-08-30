@@ -61,6 +61,16 @@
   令牌/盐使用 Web Crypto 强熵；单 IP 连续 5 次登录失败锁定 30 秒（阈值与时长可用
   环境变量调整，见「配置」）；所有认证响应 `Cache-Control: no-store`。
 
+## 界面预览
+
+| 登录页 | 注册页 |
+|---|---|
+| ![登录页](assets/screenshot-login.png) | ![注册页](assets/screenshot-register.png) |
+
+| 注册成功引导页（TOTP） | 用户管理页 |
+|---|---|
+| ![注册引导页](assets/screenshot-guide.png) | ![用户管理页](assets/screenshot-users.png) |
+
 ## 持久化
 
 - 用户数据存于 DSH 的 credentials 服务（`~/.dsh/.credentials.yaml`，每用户一条

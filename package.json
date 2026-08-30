@@ -49,5 +49,8 @@
     "type": "git",
     "url": "git+https://github.com/0QwQ0/dsh-ui-auth.git"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "puppeteer": "^25.9.0"
+  }
 }
