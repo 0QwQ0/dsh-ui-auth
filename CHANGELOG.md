@@ -16,14 +16,18 @@
   `inviteList`（每个码的已用/剩余/创建者）、`inviteRevoke`；持久化于 credentials
   的 `dsh-auth/invites` 记录；登录页增加「注册账号」入口。
 - **新增**：TOTP 两步验证（RFC 6238，纯 JS HMAC-SHA1 实现，零依赖）——
-  `totpGenerate`（base32 密钥 + otpauth URL）、`totpVerify`（启用）、`totpRemove`
-  （本人移除需当前动态码；管理员可移除任意用户）、`totpIgnore`（永久忽略提醒）；
-  未绑定且未忽略的用户每次登录弹窗提醒；用户管理页提供 TOTP 卡片（生成/启用/
-  移除/忽略）。当前版本登录仍以密码为准，免密 TOTP 登录后续版本提供。
+  `totpGenerate`（base32 密钥 + otpauth URL + 二维码）、`totpVerify`（启用）、
+  `totpRemove`（本人移除需当前动态码；管理员可移除任意用户）、`totpIgnore`
+  （永久忽略提醒）；未绑定且未忽略的用户每次登录弹窗提醒；用户管理页提供
+  TOTP 卡片（生成/启用/移除/忽略）。
+- **新增**：**2FA 登录**（0.5.0）——启用 TOTP 的用户登录需两步验证：密码正确后
+  返回 `totpRequired`，须再提交验证器动态码才能登录；登录页新增动态码输入框，
+  同时支持**免密 TOTP 登录**（密码留空 + 动态码）；动态码错误计入登录失败锁定
+  （防爆破，与密码共用同一按 IP 计数）。
 - **测试**：新增 `test/totp-vectors.mjs`（RFC 6238 官方向量 6 组 + 往返一致性 6 项）；
-  host-smoke 新增场景 18（注册/邀请码 13 项）与场景 19（TOTP 12 项）；security-suite
-  新增 REG（11 项）与 TOTP（10 项）组，总计 119/119；全量回归通过；真实部署验证：
-  注册公开端点 6/6、TOTP 全链路 6/6。
+  host-smoke 新增场景 18（注册/邀请码 13 项）、19（TOTP 12 项）、20（2FA 登录 7 项）；
+  security-suite 新增 REG（11 项）与 TOTP（含 2FA 登录，共 16 项）组，总计 125/125；
+  全量回归通过；真实部署验证：注册公开端点 6/6、TOTP 全链路 6/6、2FA 登录流程 4/4。
 
 ## 0.4.0 — WebSocket 事件流按用户隔离（网络层，无需反向代理）
 

@@ -922,5 +922,58 @@ if (disposers.length > 0) {
   check('totp: 管理员可移除他人 TOTP', adminRm.status === 200 && parseJson(me4).me.totpEnabled === false)
 }
 
+// ---- 20) 2FA 登录流程（密码 + TOTP 两步 / 免密 TOTP，0.5.0） ----
+{
+  const serverD = new EventEmitter()
+  serverD.on('request', () => {})
+  const ctxD = {
+    get(n) {
+      if (n === 'credentials') return creds
+      if (n === 'fs') return fsMock
+      if (n === 'webServer') return { server: serverD }
+      return undefined
+    },
+    effect() {},
+    interval() { return () => {} },
+    timeout(ms) { return new Promise((r) => setTimeout(r, ms)) },
+  }
+  apply(ctxD)
+  await new Promise((r) => setTimeout(r, 400))
+  const call = (method, path, body, cookie) => new Promise((resolve) => {
+    const r = makeRes()
+    serverD.emit('request', makeReq(method, path, cookie, body === undefined ? undefined : JSON.stringify(body)), r)
+    setTimeout(() => resolve(r), 80)
+  })
+  // 用 reg1（场景 18 创建，密码 reg1-pw-1234），先启用 TOTP
+  const reg1c = cookieOf(await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234' }))
+  const gen = await call('POST', '/auth/rpc/totpGenerate', {}, reg1c)
+  const secret = (parseJson(gen) || {}).secret
+  const good = totpCodeAt(secret, Date.now() / 1000)
+  await call('POST', '/auth/rpc/totpVerify', { code: good }, reg1c)
+  // 1) 密码正确 → totpRequired（不签发会话）
+  const s1 = await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234' })
+  check('2fa: 密码正确但要求 TOTP（不签发会话）', s1.status === 200 && parseJson(s1).totpRequired === true && !(s1.headers['set-cookie'] || '').includes('dsh_auth='))
+  // 2) 密码 + TOTP → 登录成功
+  const s2 = await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234', totp: good })
+  check('2fa: 密码 + TOTP 两步登录成功', s2.status === 200 && /dsh_auth=/.test(s2.headers['set-cookie'] || ''))
+  // 3) 密码正确但 TOTP 错误 → 403
+  const s3 = await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234', totp: '000000' })
+  check('2fa: TOTP 错误 → 403', s3.status === 403)
+  // 4) 免密 TOTP → 登录成功
+  const s4 = await call('POST', '/auth/login', { username: 'reg1', totp: good })
+  check('2fa: 免密 TOTP 登录成功', s4.status === 200 && /dsh_auth=/.test(s4.headers['set-cookie'] || ''))
+  // 5) 免密 TOTP 错误 → 403
+  const s5 = await call('POST', '/auth/login', { username: 'reg1', totp: '000000' })
+  check('2fa: 免密 TOTP 错误 → 403', s5.status === 403)
+  // 6) 未启用 TOTP 的账号免密 → 400
+  const s6 = await call('POST', '/auth/login', { username: 'admin', totp: '000000' })
+  check('2fa: 未启用 TOTP 的账号免密登录 → 400', s6.status === 400)
+  // 7) 仅密码无 TOTP 且未启用 → 正常登录（回归：普通登录不受影响）
+  const s7 = await call('POST', '/auth/login', { username: 'admin', password: adminPassword })
+  check('2fa: 未启用 TOTP 的账号密码登录照常', s7.status === 200 && /dsh_auth=/.test(s7.headers['set-cookie'] || ''))
+  // 清理：移除 reg1 的 TOTP
+  await call('POST', '/auth/rpc/totpRemove', { code: good }, reg1c)
+}
+
 console.log(failures === 0 ? '\nALL HOST SMOKE TESTS PASSED' : `\n${failures} FAILURES`)
 process.exit(failures === 0 ? 0 : 1)
