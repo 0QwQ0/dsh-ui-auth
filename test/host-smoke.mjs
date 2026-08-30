@@ -894,7 +894,8 @@ if (disposers.length > 0) {
   const gen = await call('POST', '/auth/rpc/totpGenerate', {}, regC)
   const secret = (parseJson(gen) || {}).secret
   const otpauth = (parseJson(gen) || {}).otpauth
-  check('totp: 生成密钥（base32 + otpauth URL）', gen.status === 200 && /^[A-Z2-7]{20,}$/.test(secret || '') && typeof otpauth === 'string' && otpauth.indexOf('otpauth://totp/') === 0)
+  const qrUrl = (parseJson(gen) || {}).qrDataUrl
+  check('totp: 生成密钥（base32 + otpauth URL + 二维码 SVG）', gen.status === 200 && /^[A-Z2-7]{20,}$/.test(secret || '') && typeof otpauth === 'string' && otpauth.indexOf('otpauth://totp/') === 0 && typeof qrUrl === 'string' && qrUrl.startsWith('data:image/svg+xml;base64,'))
   const badVerify = await call('POST', '/auth/rpc/totpVerify', { code: '000000' }, regC)
   check('totp: 错误验证码 403', badVerify.status === 403)
   const goodCode = totpCodeAt(secret, Date.now() / 1000)

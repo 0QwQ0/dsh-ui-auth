@@ -42,7 +42,7 @@ const main = async () => {
   const st0 = JSON.parse((await rpc('totpStatus')).body)
   check('初始状态未启用', st0.totp !== undefined && st0.totp.enabled === false, JSON.stringify(st0.totp))
   const gen = JSON.parse((await rpc('totpGenerate')).body)
-  check('生成密钥（base32）', /^[A-Z2-7]{20,}$/.test(gen.secret || '') && typeof gen.otpauth === 'string' && gen.otpauth.indexOf('otpauth://totp/') === 0)
+  check('生成密钥（base32 + 二维码 SVG）', /^[A-Z2-7]{20,}$/.test(gen.secret || '') && typeof gen.otpauth === 'string' && gen.otpauth.indexOf('otpauth://totp/') === 0 && typeof gen.qrDataUrl === 'string' && gen.qrDataUrl.startsWith('data:image/svg+xml;base64,'))
   const code = totpCodeAt(gen.secret, Date.now() / 1000)
   const v = await rpc('totpVerify', { code: code })
   check('正确动态码启用成功', v.status === 200, 'status=' + v.status)

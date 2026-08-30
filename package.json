@@ -31,6 +31,9 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"
   },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  },
   "engines": {
     "node": ">=22.19.0"
   },

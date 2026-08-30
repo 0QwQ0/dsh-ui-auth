@@ -597,7 +597,8 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
   check('TOTP', '初始状态未启用', parseJson(st0).totp !== undefined && parseJson(st0).totp.enabled === false)
   const gen = await rpcCall('totpGenerate', {}, test1Cookie)
   const secret = (parseJson(gen) || {}).secret
-  check('TOTP', '生成密钥：base32 格式 + otpauth URL', gen.status === 200 && /^[A-Z2-7]{20,}$/.test(secret || '') && (parseJson(gen) || {}).otpauth !== undefined && (parseJson(gen) || {}).otpauth.indexOf('otpauth://totp/') === 0)
+  const qrUrl = (parseJson(gen) || {}).qrDataUrl
+  check('TOTP', '生成密钥：base32 格式 + otpauth URL + 二维码 SVG', gen.status === 200 && /^[A-Z2-7]{20,}$/.test(secret || '') && (parseJson(gen) || {}).otpauth !== undefined && (parseJson(gen) || {}).otpauth.indexOf('otpauth://totp/') === 0 && typeof qrUrl === 'string' && qrUrl.startsWith('data:image/svg+xml;base64,'))
   const badV = await rpcCall('totpVerify', { code: '000000' }, test1Cookie)
   check('TOTP', '错误动态码 → 403', badV.status === 403)
   const goodCode = totpCodeAt(secret, Date.now() / 1000)
