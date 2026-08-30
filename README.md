@@ -60,6 +60,14 @@
   密码策略：**至少 8 位且包含两种及以上字符类型**（大写/小写字母、数字、符号）；
   令牌/盐使用 Web Crypto 强熵；单 IP 连续 5 次登录失败锁定 30 秒（阈值与时长可用
   环境变量调整，见「配置」）；所有认证响应 `Cache-Control: no-store`。
+- **Cookie Secure（0.5.1）**：TLS 直连或（仅当 `DSH_AUTH_TRUST_PROXY=1` 时）
+  `X-Forwarded-Proto: https` 的安全通道下，`dsh_auth` Cookie 自动追加 `Secure`
+  标志；HTTP 内网调试不受影响。
+- **会话哈希落盘（0.5.1）**：`dsh-ui-auth-sessions.json` 只保存会话 Token 的
+  SHA-256 哈希（64 位 hex），磁盘不再出现明文 Token；**升级到 0.5.1 后旧版明文
+  会话记录不再恢复，所有用户需重新登录一次**。
+- **引导文件自毁（0.5.1）**：首次登录后任意用户改密成功即自动删除
+  `dsh-ui-auth-bootstrap.txt`（明文初始密码不再长期残留）。
 
 ## 界面预览
 
@@ -134,7 +142,7 @@ dsh plugin --profile web remove dsh-ui-auth
 |---|---|---|
 | `DSH_AUTH_MAX_FAILS` | `5` | 单来源连续登录失败锁定阈值（正整数；非法值回退默认） |
 | `DSH_AUTH_LOCK_MS` | `30000` | 锁定持续时间毫秒 |
-| `DSH_AUTH_TRUST_PROXY` | 关 | 设为 `1`/`true`/`yes` 时信任 `X-Forwarded-For`（取最左，按真实客户端 IP 计数）。**仅在 HTTPS 反向代理后开启**——默认不信任，防止未配置反代时伪造 XFF 绕过/污染限流 |
+| `DSH_AUTH_TRUST_PROXY` | 关 | 设为 `1`/`true`/`yes` 时信任 `X-Forwarded-For`（**取最右**——最近受信反代追加的地址，客户端无法伪造；同时信任 `X-Forwarded-Proto` 用于 Secure Cookie）。**仅在 HTTPS 反向代理后开启**——默认不信任，防止未配置反代时伪造 XFF 绕过/污染限流 |
 
 面板进程启动时读取，改环境变量后重启面板生效。示例（PowerShell）：
 

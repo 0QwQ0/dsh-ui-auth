@@ -36,6 +36,7 @@ const fsMock = {
   async resolve(p) { return { path: p } },
   async writeText(target, content) { fsFiles.set(target.path, content) },
   async readText(target) { const v = fsFiles.get(target.path); if (v === undefined) throw Object.assign(new Error('not found'), { code: 'FS_NOT_FOUND' }); return v },
+  async unlink(target) { fsFiles.delete(target.path) },
 }
 
 // ---- mock ctx ----
@@ -692,7 +693,8 @@ if (disposers.length > 0) {
   check('sess: 登录成功', cookie16 !== undefined, 'status=' + loginRes.status + ' body=' + loginRes.body)
   await new Promise((r) => setTimeout(r, 100)) // 等 persistSessions 落盘
   const file = fsFiles.get('dsh-ui-auth-sessions.json')
-  check('sess: 登录后会话文件已落盘', file !== undefined && file.includes('"sessions"') && file.includes(cookie16), 'file=' + (file !== undefined ? file.slice(0, 90) : '(missing)'))
+  check('sess: 登录后会话文件已落盘', file !== undefined && file.includes('"sessions"'), 'file=' + (file !== undefined ? file.slice(0, 90) : '(missing)'))
+  check('sess: 落盘不含明文 token（哈希化，64 位 hex key）', file !== undefined && !file.includes(cookie16) && /[0-9a-f]{64}/.test(file), 'file=' + (file !== undefined ? file.slice(0, 90) : '(missing)'))
   // 模拟"重启"：新 server + 新 ctx（共享同一 credentials 与 fs 存储），再 apply 一次
   const serverR2 = new EventEmitter()
   serverR2.on('request', () => {})
@@ -992,6 +994,41 @@ if (disposers.length > 0) {
   check('2fa: 关闭后密码直接登录恢复', s7.status === 200 && parseJson(s7).totpRequired !== true && /dsh_auth=/.test(s7.headers['set-cookie'] || ''))
   // 清理：移除 reg1 的 TOTP
   await call('POST', '/auth/rpc/totpRemove', { code: good }, reg1c)
+}
+
+// ---- 21) bootstrap 自毁（0.5.1）：改密成功后删除明文引导文件 ----
+{
+  const serverE = new EventEmitter()
+  serverE.on('request', () => {})
+  const ctxE = {
+    get(n) {
+      if (n === 'credentials') return creds
+      if (n === 'fs') return fsMock
+      if (n === 'webServer') return { server: serverE }
+      return undefined
+    },
+    effect() {},
+    interval() { return () => {} },
+    timeout(ms) { return new Promise((r) => setTimeout(r, ms)) },
+  }
+  apply(ctxE)
+  await new Promise((r) => setTimeout(r, 400))
+  const callE = (method, path, body, cookie) => new Promise((resolve) => {
+    const r = makeRes()
+    serverE.emit('request', makeReq(method, path, cookie, body === undefined ? undefined : JSON.stringify(body)), r)
+    setTimeout(() => resolve(r), 80)
+  })
+  const before = fsFiles.get('dsh-ui-auth-bootstrap.txt')
+  check('boot: 引导文件存在（自毁前置）', before !== undefined)
+  const adminE = cookieOf(await callE('POST', '/auth/login', { username: 'admin', password: adminPassword }))
+  const change = await callE('POST', '/auth/rpc/changePassword', { oldPassword: adminPassword, newPassword: 'boot-pw-1234' }, adminE)
+  check('boot: 改密成功', change.status === 200)
+  await new Promise((r) => setTimeout(r, 120))
+  const after = fsFiles.get('dsh-ui-auth-bootstrap.txt')
+  check('boot: 改密后引导文件自毁（auto-unlink）', after === undefined)
+  // 还原 admin 密码（场景 21 为最后一个场景，仍保持状态整洁）
+  const adminE2 = cookieOf(await callE('POST', '/auth/login', { username: 'admin', password: 'boot-pw-1234' }))
+  await callE('POST', '/auth/rpc/changePassword', { oldPassword: 'boot-pw-1234', newPassword: adminPassword }, adminE2)
 }
 
 console.log(failures === 0 ? '\nALL HOST SMOKE TESTS PASSED' : `\n${failures} FAILURES`)

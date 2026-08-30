@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.1 — 安全加固（依据外部安全审计核验实施）
+
+依据安全工程师审计报告核验后实施的 5 项加固：
+
+- **Secure Cookie 动态启用**：TLS 直连或（仅信任反代时）`X-Forwarded-Proto: https`
+  的安全通道下，`dsh_auth` Cookie 自动追加 `Secure` 标志；HTTP 内网调试不受影响；
+  未信任反代时 X-Forwarded-Proto 不生效（防伪造）。
+- **trustProxy 解析加固**：`X-Forwarded-For` 改为取**最右**（最近受信反代追加的
+  地址，客户端无法伪造），修复开启 trustProxy 时伪造 XFF 可绕过登录锁定的问题；
+  尾部空段自动跳过。默认仍不信任 XFF。
+- **bootstrap 自毁**：任意用户改密成功后自动删除 `dsh-ui-auth-bootstrap.txt`
+  （明文初始密码不再长期残留）；优先 `fsSvc.unlink`，回退 `processPath`+`node:fs`。
+- **WS 未知帧 fail-closed 纪律固化**：新增断言——无归属的未知帧类型一律丢弃
+  （过滤逻辑本就默认拒绝，此条以测试固化，防未来新增帧类型时漏桶）。
+- **会话 Token 哈希落盘**：`dsh-ui-auth-sessions.json` 只存 Token 的 SHA-256 哈希
+  （64 位 hex），磁盘无明文 Token；**升级到 0.5.1 后旧版明文会话记录不再恢复，
+  所有用户需重新登录一次**。
+- **测试**：security-suite 新增 Secure Cookie（3 项）、clientIp 取最右/伪造 XFF/
+  空段（3 项）；host-smoke 新增场景 21 bootstrap 自毁（3 项）、场景 16 会话哈希
+  断言；WS-ISO 未知帧断言。总计 **147/147**；真实部署验证：会话哈希 save/verify
+  （重启恢复 ✓）、注册面 10/10、sessions 文件精确校验（全部 64-hex 哈希）。
+
 ## 0.5.0 — 用户注册（邀请码）与 TOTP 两步验证
 
 - **修复**：设置面板「用户管理」输入框宽度超出上级 UI 右边界——补 `box-sizing:

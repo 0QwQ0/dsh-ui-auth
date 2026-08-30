@@ -471,6 +471,7 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
     { rpcId: 'r3', payload: { type: 'session/event', sessionId: 's-admin', event: { type: 'user/message', data: { source: { kind: 'user' }, content: 'admin-secret' }, time: 1 } } },
     { rpcId: 'r4', payload: { type: 'session/event', sessionId: 's-test1', event: { type: 'user/message', data: { source: { kind: 'user' }, content: 'mine' }, time: 2 } } },
     { rpcId: 'r5', payload: { type: 'stream/error', error: { code: 'internal', message: 'x', details: {} } } },
+    { rpcId: 'r6', payload: { type: 'future/unknown-event', opaque: 'leak?' } },
   ]
   const hostFrames = [
     { rpcId: 'h1', payload: { type: 'host/session-status', sessionId: 's-test1', running: true } },
@@ -501,6 +502,7 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
     check('WS-ISO', 'mux 过滤：他人会话帧（subscribed/event）在网络层被丢弃', !js.some((f) => (f.payload || {}).sessionId === 's-admin'))
     check('WS-ISO', 'mux 过滤：自己的事件帧放行', js.some((f) => (f.payload || {}).rpcId === undefined && (f.payload || {}).type === 'session/event' && (f.payload || {}).sessionId === 's-test1'))
     check('WS-ISO', 'mux 过滤：全局 stream/error 帧放行', js.some((f) => (f.payload || {}).type === 'stream/error'))
+    check('WS-ISO', 'mux 过滤：无归属的未知帧类型被丢弃（fail-closed，不漏桶）', !js.some((f) => (f.payload || {}).type === 'future/unknown-event'))
   })())
   wsPromises.push((async () => {
     // B) host：test1 按 session/workspace 归属过滤；remote-event 丢弃；数组帧逐元素过滤
@@ -539,10 +541,31 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
   check('CFG', '非法配置值回退默认', readLockConfig({ DSH_AUTH_MAX_FAILS: 'abc', DSH_AUTH_LOCK_MS: '-1' }).maxFails === 5 && readLockConfig({ DSH_AUTH_LOCK_MS: '-1' }).lockMs === 30000)
   check('CFG', '默认不信任 X-Forwarded-For（伪造 XFF 不生效）',
     clientIp({ socket: { remoteAddress: '127.0.0.1' }, headers: { 'x-forwarded-for': '203.0.113.9' } }, false) === '127.0.0.1')
-  check('CFG', 'trustProxy 时取 XFF 第一个（反代场景按真实客户端计数）',
-    clientIp({ socket: { remoteAddress: '127.0.0.1' }, headers: { 'x-forwarded-for': '203.0.113.9, 10.0.0.1' } }, true) === '203.0.113.9')
+  check('CFG', 'trustProxy 时取 XFF 最右（最近反代追加，客户端不可伪造）',
+    clientIp({ socket: { remoteAddress: '127.0.0.1' }, headers: { 'x-forwarded-for': '203.0.113.9, 10.0.0.1' } }, true) === '10.0.0.1')
+  check('CFG', '伪造 XFF（最左）不再生效（取最右真实来源）',
+    clientIp({ socket: { remoteAddress: '127.0.0.1' }, headers: { 'x-forwarded-for': '6.6.6.6, 10.0.0.1' } }, true) === '10.0.0.1')
+  check('CFG', 'XFF 尾部空段时从右找首个非空',
+    clientIp({ socket: { remoteAddress: '127.0.0.1' }, headers: { 'x-forwarded-for': '203.0.113.9, ' } }, true) === '203.0.113.9')
   check('CFG', 'trustProxy 但无 XFF 时回退 socket 地址',
     clientIp({ socket: { remoteAddress: '192.0.2.7' }, headers: {} }, true) === '192.0.2.7')
+  // Secure Cookie：TLS 直连追加；HTTP 不加；未信任反代时 X-Forwarded-Proto 不生效
+  const secLogin = makeRes()
+  const secReq = makeReq('POST', '/auth/login', undefined, JSON.stringify({ username: 'admin', password: 'new-admin-pw-9999' }), '10.5.0.1')
+  secReq.socket = { remoteAddress: '10.5.0.1', encrypted: true }
+  server.emit('request', secReq, secLogin)
+  await settle()
+  check('CFG', 'TLS 直连登录 Cookie 含 Secure', /dsh_auth=/.test(secLogin.headers['set-cookie'] || '') && (secLogin.headers['set-cookie'] || '').includes('Secure'))
+  const plainLogin = makeRes()
+  server.emit('request', makeReq('POST', '/auth/login', undefined, JSON.stringify({ username: 'admin', password: 'new-admin-pw-9999' }), '10.5.0.2'), plainLogin)
+  await settle()
+  check('CFG', 'HTTP 登录 Cookie 不含 Secure（内网调试兼容）', /dsh_auth=/.test(plainLogin.headers['set-cookie'] || '') && !(plainLogin.headers['set-cookie'] || '').includes('Secure'))
+  const xfpReq = makeReq('POST', '/auth/login', undefined, JSON.stringify({ username: 'admin', password: 'new-admin-pw-9999' }), '10.5.0.3')
+  xfpReq.headers = { ...xfpReq.headers, 'x-forwarded-proto': 'https' }
+  const xfpLogin = makeRes()
+  server.emit('request', xfpReq, xfpLogin)
+  await settle()
+  check('CFG', '未信任反代时 X-Forwarded-Proto 不启用 Secure', /dsh_auth=/.test(xfpLogin.headers['set-cookie'] || '') && !(xfpLogin.headers['set-cookie'] || '').includes('Secure'))
 }
 
 // ==================== M. 注册 + 邀请码（0.5.0） ====================
