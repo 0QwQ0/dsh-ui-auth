@@ -60,6 +60,8 @@ const main = async () => {
   check('两次密码不一致 → 400', mismatch.status === 400, mismatch.body.slice(0, 80))
   const weak = await retryPost({ username: 'live-reg2', password: 'short', confirmPassword: 'short', email: '', invite: 'NOPE1234' })
   check('弱密码 → 400', weak.status === 400)
+  const noComplex = await retryPost({ username: 'live-reg-c', password: 'abcdefgh', confirmPassword: 'abcdefgh', email: '', invite: 'NOPE1234' })
+  check('复杂度不足（8 位纯字母）→ 400', noComplex.status === 400, noComplex.body.slice(0, 80))
   const badName = await retryPost({ username: 'x', password: 'live-reg3-pw', email: '', invite: 'NOPE1234' })
   check('用户名格式非法 → 400', badName.status === 400)
   const malformed = await retryPost(undefined, '{oops not json')

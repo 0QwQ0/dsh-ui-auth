@@ -851,7 +851,10 @@ if (disposers.length > 0) {
   check('reg: 无效邀请码 403', regBad.status === 403)
   // 8) 弱密码 400
   const regWeak = await call('POST', '/auth/register', { username: 'reg5', password: 'short', confirmPassword: 'short', email: '', invite: code })
-  check('reg: 弱密码 400', regWeak.status === 400)
+  check('reg: 弱密码（长度不足）400', regWeak.status === 400)
+  // 8b) 复杂度不足（8 位纯字母，仅一种字符类型）400
+  const regComplex = await call('POST', '/auth/register', { username: 'reg6', password: 'abcdefgh', confirmPassword: 'abcdefgh', email: '', invite: code })
+  check('reg: 复杂度不足（纯字母）400', regComplex.status === 400 && parseJson(regComplex).error.includes('字符类型'))
   // 9) 用户名已存在 409
   const regDup = await call('POST', '/auth/register', { username: 'reg1', password: 'reg1-pw-1234', confirmPassword: 'reg1-pw-1234', email: '', invite: code })
   check('reg: 用户名已存在 409', regDup.status === 409)
