@@ -832,7 +832,7 @@ if (disposers.length > 0) {
   const page = await call('GET', '/auth/register')
   check('reg: 注册页 200', page.status === 200 && page.body.includes('邀请码'))
   // 4) 有效邀请码注册成功（自动登录并跳转 TOTP 引导页）
-  const reg1 = await call('POST', '/auth/register', { username: 'reg1', password: 'reg1-pw-1234', email: 'reg1@example.com', invite: code })
+  const reg1 = await call('POST', '/auth/register', { username: 'reg1', password: 'reg1-pw-1234', confirmPassword: 'reg1-pw-1234', email: 'reg1@example.com', invite: code })
   const reg1AutoCookie = cookieOf(reg1)
   check('reg: 有效邀请码注册成功（自动登录 + 引导页 redirect）', reg1.status === 200 && parseJson(reg1).ok === true && reg1AutoCookie !== undefined && parseJson(reg1).redirect === '/auth/register/success', 'status=' + reg1.status + ' body=' + reg1.body)
   // 4b) 注册成功引导页：带 cookie 可访问，未登录重定向
@@ -841,19 +841,19 @@ if (disposers.length > 0) {
   const successNoCookie = await call('GET', '/auth/register/success')
   check('reg: 未登录访问引导页 → 302 登录页', successNoCookie.status === 302 && (successNoCookie.headers.location || '').startsWith('/auth/login'))
   // 5) 同一码第二次注册成功（uses=2）
-  const reg2 = await call('POST', '/auth/register', { username: 'reg2', password: 'reg2-pw-1234', email: '', invite: code })
+  const reg2 = await call('POST', '/auth/register', { username: 'reg2', password: 'reg2-pw-1234', confirmPassword: 'reg2-pw-1234', email: '', invite: code })
   check('reg: 同一码第二次注册成功（可注册 2 次）', reg2.status === 200)
   // 6) 第三次被拒（次数耗尽）
-  const reg3 = await call('POST', '/auth/register', { username: 'reg3', password: 'reg3-pw-1234', email: '', invite: code })
+  const reg3 = await call('POST', '/auth/register', { username: 'reg3', password: 'reg3-pw-1234', confirmPassword: 'reg3-pw-1234', email: '', invite: code })
   check('reg: 次数耗尽后 403', reg3.status === 403)
   // 7) 无效邀请码 403
-  const regBad = await call('POST', '/auth/register', { username: 'reg4', password: 'reg4-pw-1234', email: '', invite: 'XXXX9999' })
+  const regBad = await call('POST', '/auth/register', { username: 'reg4', password: 'reg4-pw-1234', confirmPassword: 'reg4-pw-1234', email: '', invite: 'XXXX9999' })
   check('reg: 无效邀请码 403', regBad.status === 403)
   // 8) 弱密码 400
-  const regWeak = await call('POST', '/auth/register', { username: 'reg5', password: 'short', email: '', invite: code })
+  const regWeak = await call('POST', '/auth/register', { username: 'reg5', password: 'short', confirmPassword: 'short', email: '', invite: code })
   check('reg: 弱密码 400', regWeak.status === 400)
   // 9) 用户名已存在 409
-  const regDup = await call('POST', '/auth/register', { username: 'reg1', password: 'reg1-pw-1234', email: '', invite: code })
+  const regDup = await call('POST', '/auth/register', { username: 'reg1', password: 'reg1-pw-1234', confirmPassword: 'reg1-pw-1234', email: '', invite: code })
   check('reg: 用户名已存在 409', regDup.status === 409)
   // 10) 注册的新用户可登录（role=user）
   const regLogin = await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234' })

@@ -549,15 +549,20 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
 {
   const postReg = (body) => new Promise((resolve) => {
     const r = makeRes()
-    server.emit('request', makeReq('POST', '/auth/register', undefined, JSON.stringify(body), '10.1.0.1'), r)
+    // 默认补 confirmPassword = password（除非调用方显式传不一致值）
+    const withConfirm = { confirmPassword: body.password, ...body }
+    server.emit('request', makeReq('POST', '/auth/register', undefined, JSON.stringify(withConfirm), '10.1.0.1'), r)
     setTimeout(() => resolve(r), 60)
   })
   const page = makeRes()
   server.emit('request', makeReq('GET', '/auth/register', undefined, undefined), page)
   check('REG', '注册页 GET 200（含邀请码字段）', page.status === 200 && page.body.includes('邀请码') && page.body.includes('已有账号？返回登录'))
+  check('REG', '注册页含确认密码与眼睛按钮', page.body.includes('确认密码') && page.body.includes('eye') && page.body.includes('显示/隐藏密码'))
   check('REG', '注册页/接口 no-store', (page.headers['cache-control'] || '').includes('no-store'))
   const bad = await postReg({ username: 'regs1', password: 'regs1-pw-1', email: '', invite: 'NOPE1234' })
   check('REG', '无效邀请码 → 403', bad.status === 403 && parseJson(bad).error === '邀请码无效或已用完')
+  const mismatch = await postReg({ username: 'regs1b', password: 'regs1-pw-1', confirmPassword: 'different-pw', email: '', invite: 'NOPE1234' })
+  check('REG', '两次密码不一致 → 400', mismatch.status === 400 && parseJson(mismatch).error === '两次输入的密码不一致')
   const weak = await postReg({ username: 'regs2', password: 'short', email: '', invite: 'NOPE1234' })
   check('REG', '弱密码 → 400（先于邀请码校验）', weak.status === 400)
   const badName = await postReg({ username: 'x', password: 'regs2-pw-1234', email: '', invite: 'NOPE1234' })
@@ -586,6 +591,14 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
   server.emit('request', makeReq('POST', '/auth/rpc/inviteCreate', test1Cookie, JSON.stringify({ amount: 1 })), denied)
   await settle()
   check('REG', '普通用户 inviteCreate → 403（越权）', denied.status === 403)
+  // 管理员撤销不存在的邀请码 → 404
+  const revMissing = makeRes()
+  server.emit('request', makeReq('POST', '/auth/rpc/inviteRevoke', adminCookie, JSON.stringify({ code: 'ZZZZ9999' })), revMissing)
+  await settle()
+  check('REG', '撤销不存在的邀请码 → 404', revMissing.status === 404)
+  // 用户名 XSS 字符被拒绝（USERNAME_RE 不允许 < > 等）
+  const xssName = await postReg({ username: 'a<script>', password: 'xss-pw-1234', confirmPassword: 'xss-pw-1234', email: '', invite: 'NOPE1234' })
+  check('REG', '用户名含 HTML 字符 → 400（无 XSS 注入面）', xssName.status === 400)
   const regLogin = makeRes()
   server.emit('request', makeReq('POST', '/auth/login', undefined, JSON.stringify({ username: 'regs3', password: 'regs3-pw-1234' }), '10.1.0.2'), regLogin)
   await settle()
@@ -594,6 +607,12 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
   server.emit('request', makeReq('POST', '/auth/register', undefined, '{oops not json'), page2)
   await settle()
   check('REG', '注册接口畸形 JSON → 400', page2.status === 400)
+  // 引导页 no-store
+  const succPage2 = makeRes()
+  const regs3c = /dsh_auth=([^;]+)/.exec(regLogin.headers['set-cookie'] || '') !== null ? /dsh_auth=([^;]+)/.exec(regLogin.headers['set-cookie'] || '')[1] : ''
+  server.emit('request', makeReq('GET', '/auth/register/success', regs3c, undefined), succPage2)
+  await settle()
+  check('REG', '引导页 no-store', (succPage2.headers['cache-control'] || '').includes('no-store'))
 }
 
 // ==================== N. TOTP 两步验证（0.5.0） ====================
@@ -605,6 +624,9 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
   })
   const st0 = await rpcCall('totpStatus', {}, test1Cookie)
   check('TOTP', '初始状态未启用', parseJson(st0).totp !== undefined && parseJson(st0).totp.enabled === false)
+  // 未绑定 TOTP 时不能开启 2FA
+  const on2faEarly = await rpcCall('totpSet2fa', { enabled: true }, test1Cookie)
+  check('TOTP', '未绑定 TOTP 时开启两步验证 → 400', on2faEarly.status === 400)
   const gen = await rpcCall('totpGenerate', {}, test1Cookie)
   const secret = (parseJson(gen) || {}).secret
   const qrUrl = (parseJson(gen) || {}).qrDataUrl
@@ -656,6 +678,12 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
   server.emit('request', makeReq('POST', '/auth/login', undefined, JSON.stringify({ username: 'admin', totp: '000000' }), '10.3.0.7'), loginFreeNoTotp)
   await settle()
   check('TOTP', '未启用 TOTP 的账号免密 → 400', loginFreeNoTotp.status === 400)
+  // 普通用户不能移除他人 TOTP（test1 尝试移除 admin 的）
+  const rmOther = await rpcCall('totpRemove', { username: 'admin', code: goodCode }, test1Cookie)
+  check('TOTP', '普通用户移除他人 TOTP → 403', rmOther.status === 403)
+  // 管理员移除不存在的用户 → 404
+  const rmMissing = await rpcCall('totpRemove', { username: 'nobody-xyz' }, adminCookie)
+  check('TOTP', '管理员移除不存在用户的 TOTP → 404', rmMissing.status === 404)
   const rmBad = await rpcCall('totpRemove', { code: '000000' }, test1Cookie)
   check('TOTP', '移除需验证码（错误码 403）', rmBad.status === 403)
   const rmOk = await rpcCall('totpRemove', { code: goodCode }, test1Cookie)
@@ -688,7 +716,7 @@ check('INFO', '网关异常时返回通用 500（不泄露堆栈）', HOST_SRC.i
 
 // ==================== G. 越权（垂直 + 水平） ====================
 {
-  for (const m of ['listUsers', 'createUser', 'resetPassword', 'setRole', 'deleteUser']) {
+  for (const m of ['listUsers', 'createUser', 'resetPassword', 'setRole', 'deleteUser', 'inviteCreate', 'inviteList', 'inviteRevoke']) {
     const r = makeRes()
     server.emit('request', makeReq('POST', '/auth/rpc/' + m, test1Cookie, '{}'), r)
     await settle()
