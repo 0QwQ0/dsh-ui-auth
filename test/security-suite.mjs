@@ -6,7 +6,7 @@
 // ============================================================================
 import { EventEmitter } from 'node:events'
 import { readFileSync } from 'node:fs'
-import { apply, readLockConfig, clientIp } from '../lib/index.js'
+import { apply, readLockConfig, clientIp, totpCodeAt } from '../lib/index.js'
 
 const HOST_SRC = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
 const CLIENT_SRC = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
@@ -545,6 +545,80 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
     clientIp({ socket: { remoteAddress: '192.0.2.7' }, headers: {} }, true) === '192.0.2.7')
 }
 
+// ==================== M. 注册 + 邀请码（0.5.0） ====================
+{
+  const postReg = (body) => new Promise((resolve) => {
+    const r = makeRes()
+    server.emit('request', makeReq('POST', '/auth/register', undefined, JSON.stringify(body), '10.1.0.1'), r)
+    setTimeout(() => resolve(r), 60)
+  })
+  const page = makeRes()
+  server.emit('request', makeReq('GET', '/auth/register', undefined, undefined), page)
+  check('REG', '注册页 GET 200（含邀请码字段）', page.status === 200 && page.body.includes('邀请码') && page.body.includes('已有账号？返回登录'))
+  check('REG', '注册页/接口 no-store', (page.headers['cache-control'] || '').includes('no-store'))
+  const bad = await postReg({ username: 'regs1', password: 'regs1-pw-1', email: '', invite: 'NOPE1234' })
+  check('REG', '无效邀请码 → 403', bad.status === 403 && parseJson(bad).error === '邀请码无效或已用完')
+  const weak = await postReg({ username: 'regs2', password: 'short', email: '', invite: 'NOPE1234' })
+  check('REG', '弱密码 → 400（先于邀请码校验）', weak.status === 400)
+  const badName = await postReg({ username: 'x', password: 'regs2-pw-1234', email: '', invite: 'NOPE1234' })
+  check('REG', '用户名格式非法 → 400', badName.status === 400)
+  // 有效邀请码全流程（admin 生成 → 注册 → 次数耗尽）
+  const inv = makeRes()
+  server.emit('request', makeReq('POST', '/auth/rpc/inviteCreate', adminCookie, JSON.stringify({ amount: 1, uses: 1 })), inv)
+  await settle()
+  const code = (parseJson(inv) || {}).codes !== undefined ? parseJson(inv).codes[0] : undefined
+  check('REG', '管理员生成邀请码（8 位去混淆字符集）', inv.status === 200 && typeof code === 'string' && /^[A-Z2-9]{8}$/.test(code))
+  const okReg = await postReg({ username: 'regs3', password: 'regs3-pw-1234', email: 'regs3@example.com', invite: code })
+  check('REG', '有效邀请码注册成功', okReg.status === 200 && parseJson(okReg).ok === true)
+  const exhausted = await postReg({ username: 'regs4', password: 'regs4-pw-1234', email: '', invite: code })
+  check('REG', '邀请码次数耗尽 → 403', exhausted.status === 403)
+  const denied = makeRes()
+  server.emit('request', makeReq('POST', '/auth/rpc/inviteCreate', test1Cookie, JSON.stringify({ amount: 1 })), denied)
+  await settle()
+  check('REG', '普通用户 inviteCreate → 403（越权）', denied.status === 403)
+  const regLogin = makeRes()
+  server.emit('request', makeReq('POST', '/auth/login', undefined, JSON.stringify({ username: 'regs3', password: 'regs3-pw-1234' }), '10.1.0.2'), regLogin)
+  await settle()
+  check('REG', '新注册用户可登录（role=user，邮箱保留）', regLogin.status === 200 && /dsh_auth=/.test(regLogin.headers['set-cookie'] || ''))
+  const page2 = makeRes()
+  server.emit('request', makeReq('POST', '/auth/register', undefined, '{oops not json'), page2)
+  await settle()
+  check('REG', '注册接口畸形 JSON → 400', page2.status === 400)
+}
+
+// ==================== N. TOTP 两步验证（0.5.0） ====================
+{
+  const rpcCall = (method, body, cookie) => new Promise((resolve) => {
+    const r = makeRes()
+    server.emit('request', makeReq('POST', '/auth/rpc/' + method, cookie, JSON.stringify(body || {})), r)
+    setTimeout(() => resolve(r), 60)
+  })
+  const st0 = await rpcCall('totpStatus', {}, test1Cookie)
+  check('TOTP', '初始状态未启用', parseJson(st0).totp !== undefined && parseJson(st0).totp.enabled === false)
+  const gen = await rpcCall('totpGenerate', {}, test1Cookie)
+  const secret = (parseJson(gen) || {}).secret
+  check('TOTP', '生成密钥：base32 格式 + otpauth URL', gen.status === 200 && /^[A-Z2-7]{20,}$/.test(secret || '') && (parseJson(gen) || {}).otpauth !== undefined && (parseJson(gen) || {}).otpauth.indexOf('otpauth://totp/') === 0)
+  const badV = await rpcCall('totpVerify', { code: '000000' }, test1Cookie)
+  check('TOTP', '错误动态码 → 403', badV.status === 403)
+  const goodCode = totpCodeAt(secret, Date.now() / 1000)
+  const okV = await rpcCall('totpVerify', { code: goodCode }, test1Cookie)
+  check('TOTP', '正确动态码启用成功', okV.status === 200)
+  const me = await rpcCall('me', {}, test1Cookie)
+  const meStr = JSON.stringify(parseJson(me))
+  check('TOTP', 'me 显示已启用且不泄露 secret', parseJson(me).me.totpEnabled === true && !meStr.includes('totpSecret'))
+  const gen2 = await rpcCall('totpGenerate', {}, test1Cookie)
+  check('TOTP', '已启用后重新生成 → 400', gen2.status === 400)
+  const rmBad = await rpcCall('totpRemove', { code: '000000' }, test1Cookie)
+  check('TOTP', '移除需验证码（错误码 403）', rmBad.status === 403)
+  const rmOk = await rpcCall('totpRemove', { code: goodCode }, test1Cookie)
+  check('TOTP', '正确验证码移除成功', rmOk.status === 200)
+  const ign = await rpcCall('totpIgnore', { ignore: true }, test1Cookie)
+  const me2 = await rpcCall('me', {}, test1Cookie)
+  check('TOTP', '永久忽略开关生效', ign.status === 200 && parseJson(me2).me.totpIgnore === true)
+  const me3 = await rpcCall('me', {}, test1Cookie)
+  check('TOTP', '移除后恢复未启用', parseJson(me3).me.totpEnabled === false)
+}
+
 // ==================== F. 信息泄露 ====================
 {
   const r = makeRes()
@@ -695,7 +769,7 @@ for (const r of results) {
   if (r.pass) byCategory[r.category].pass++
 }
 console.log('\n================ 安全验证汇总 ================')
-const order = ['AUTH', 'SESSION', 'INJ', 'CSRF', 'HTTP', 'INFO', 'AUTHZ', 'ISO', 'AVAIL', 'DEPLOY', 'WS-ISO', 'CFG']
+const order = ['AUTH', 'SESSION', 'INJ', 'CSRF', 'HTTP', 'INFO', 'AUTHZ', 'ISO', 'AVAIL', 'DEPLOY', 'WS-ISO', 'CFG', 'REG', 'TOTP']
 for (const c of order) {
   const s = byCategory[c] || { total: 0, pass: 0 }
   const flag = s.pass === s.total ? 'PASS' : 'FAIL'

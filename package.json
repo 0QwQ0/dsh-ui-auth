@@ -1,7 +1,7 @@
 {
   "name": "dsh-ui-auth",
-  "version": "0.4.0",
-  "description": "DSH Web UI 认证网关：登录保护全部 HTTP/WS 接口，设置面板提供用户管理（管理员可管理用户）。",
+  "version": "0.5.0",
+  "description": "DSH Web UI 认证网关：登录保护全部 HTTP/WS 接口；用户管理、邀请码注册与 TOTP 两步验证。",
   "type": "module",
   "main": "./lib/index.js",
   "exports": {
@@ -17,8 +17,8 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "test": "node --check lib/index.js && node --check lib/client.js && node test/crypto-vectors.cjs && node test/client-smoke.cjs && node test/host-smoke.mjs && node test/security-suite.mjs",
-    "prepack": "node --check lib/index.js && node --check lib/client.js && node test/crypto-vectors.cjs && node test/client-smoke.cjs && node test/host-smoke.mjs && node test/security-suite.mjs"
+    "test": "node --check lib/index.js && node --check lib/client.js && node test/crypto-vectors.cjs && node test/totp-vectors.mjs && node test/client-smoke.cjs && node test/host-smoke.mjs && node test/security-suite.mjs",
+    "prepack": "node --check lib/index.js && node --check lib/client.js && node test/crypto-vectors.cjs && node test/totp-vectors.mjs && node test/client-smoke.cjs && node test/host-smoke.mjs && node test/security-suite.mjs"
   },
   "dsh": {
     "bundle": {

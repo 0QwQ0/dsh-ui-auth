@@ -107,6 +107,14 @@ const tick = () => new Promise((r) => setTimeout(r, 20))
   check('button color uses on-primary token', code.includes('--dsw-alias-label-primary-foreground'))
   check('button no longer uses contrast-fill', !code.includes('--dsw-alias-button-contrast-fill'))
   check('danger button uses on-primary token', /\.dshua button\.danger\{[^}]*--dsw-alias-label-primary-foreground/.test(code))
+  check('inputs use box-sizing:border-box (width stays inside container, equal side margins)', /\.dshua input, \.dshua select\{[^}]*box-sizing:border-box/.test(code))
+  {
+    const inputRule = (code.match(/\.dshua input, \.dshua select\{[^}]*\}/) || [''])[0]
+    check('input rule: width 100% + padding + border-box (never exceeds parent right edge)', inputRule.includes('width:100%') && inputRule.includes('padding:8px 10px') && inputRule.includes('box-sizing:border-box'))
+  }
+  check('TOTP card present (两步验证)', code.includes('两步验证（TOTP）') && code.includes('totpGenerate') && code.includes('totpVerify'))
+  check('TOTP login reminder present (showTotpReminder)', code.includes('showTotpReminder') && code.includes('建议开启两步验证') && code.includes('totpIgnore'))
+  check('invite management card present (邀请码管理)', code.includes('邀请码管理（管理员）') && code.includes('inviteCreate') && code.includes('inviteList'))
 
   console.log(failures === 0 ? '\nCLIENT BUNDLE SMOKE TEST PASSED' : `\n${failures} FAILURES`)
   process.exit(failures === 0 ? 0 : 1)

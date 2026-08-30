@@ -3,7 +3,7 @@
 // then drive the real gate: bootstrap admin, redirects, 401s, login, RPC,
 // and passthrough to the original request listener.
 import { EventEmitter } from 'node:events'
-import { name, inject, apply } from '../lib/index.js'
+import { name, inject, apply, totpCodeAt } from '../lib/index.js'
 
 let failures = 0
 function check(label, cond, extra) {
@@ -793,6 +793,132 @@ if (disposers.length > 0) {
   check('audit: 越权尝试已记录（denied:true）', auditFile2 !== undefined && auditFile2.includes('"denied":true'), 'audit=' + (auditFile2 !== undefined ? auditFile2.slice(0, 160) : '(missing)'))
   const lines = (auditFile2 !== undefined ? auditFile2.trim().split('\n') : [])
   check('audit: 每一行都是合法 JSON（JSONL）', lines.length >= 2 && lines.every((l) => { try { JSON.parse(l); return true } catch (e) { return false } }))
+}
+
+// ---- 18) 注册 + 邀请码（0.5.0） ----
+{
+  const serverB = new EventEmitter()
+  serverB.on('request', () => {})
+  const ctxB = {
+    get(n) {
+      if (n === 'credentials') return creds
+      if (n === 'fs') return fsMock
+      if (n === 'webServer') return { server: serverB }
+      return undefined
+    },
+    effect() {},
+    interval() { return () => {} },
+    timeout(ms) { return new Promise((r) => setTimeout(r, ms)) },
+  }
+  apply(ctxB)
+  await new Promise((r) => setTimeout(r, 400))
+  const call = (method, path, body, cookie) => new Promise((resolve) => {
+    const r = makeRes()
+    serverB.emit('request', makeReq(method, path, cookie, body === undefined ? undefined : JSON.stringify(body)), r)
+    setTimeout(() => resolve(r), 80)
+  })
+  const loginB = await call('POST', '/auth/login', { username: 'admin', password: adminPassword })
+  const adminB = cookieOf(loginB)
+  check('reg: admin 登录成功', adminB !== undefined)
+  // 1) 生成邀请码（1 个码，可用 2 次）
+  const inv = await call('POST', '/auth/rpc/inviteCreate', { amount: 1, uses: 2 }, adminB)
+  const code = (parseJson(inv) || {}).codes !== undefined ? parseJson(inv).codes[0] : undefined
+  check('reg: 生成邀请码', inv.status === 200 && typeof code === 'string' && /^[A-Z2-9]{8}$/.test(code), 'status=' + inv.status)
+  // 2) inviteList 显示剩余数
+  const list1 = await call('POST', '/auth/rpc/inviteList', {}, adminB)
+  const inv1 = (parseJson(list1) || {}).invites !== undefined ? parseJson(list1).invites.find((i) => i.code === code) : undefined
+  check('reg: inviteList 显示 total=2 used=0 remaining=2', inv1 !== undefined && inv1.total === 2 && inv1.used === 0 && inv1.remaining === 2)
+  // 3) 注册页可达
+  const page = await call('GET', '/auth/register')
+  check('reg: 注册页 200', page.status === 200 && page.body.includes('邀请码'))
+  // 4) 有效邀请码注册成功（无 cookie）
+  const reg1 = await call('POST', '/auth/register', { username: 'reg1', password: 'reg1-pw-1234', email: 'reg1@example.com', invite: code })
+  check('reg: 有效邀请码注册成功', reg1.status === 200 && parseJson(reg1).ok === true, 'status=' + reg1.status + ' body=' + reg1.body)
+  // 5) 同一码第二次注册成功（uses=2）
+  const reg2 = await call('POST', '/auth/register', { username: 'reg2', password: 'reg2-pw-1234', email: '', invite: code })
+  check('reg: 同一码第二次注册成功（可注册 2 次）', reg2.status === 200)
+  // 6) 第三次被拒（次数耗尽）
+  const reg3 = await call('POST', '/auth/register', { username: 'reg3', password: 'reg3-pw-1234', email: '', invite: code })
+  check('reg: 次数耗尽后 403', reg3.status === 403)
+  // 7) 无效邀请码 403
+  const regBad = await call('POST', '/auth/register', { username: 'reg4', password: 'reg4-pw-1234', email: '', invite: 'XXXX9999' })
+  check('reg: 无效邀请码 403', regBad.status === 403)
+  // 8) 弱密码 400
+  const regWeak = await call('POST', '/auth/register', { username: 'reg5', password: 'short', email: '', invite: code })
+  check('reg: 弱密码 400', regWeak.status === 400)
+  // 9) 用户名已存在 409
+  const regDup = await call('POST', '/auth/register', { username: 'reg1', password: 'reg1-pw-1234', email: '', invite: code })
+  check('reg: 用户名已存在 409', regDup.status === 409)
+  // 10) 注册的新用户可登录（role=user）
+  const regLogin = await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234' })
+  const regCookie = cookieOf(regLogin)
+  const regMe = await call('POST', '/auth/rpc/me', {}, regCookie)
+  check('reg: 新用户登录成功且为普通用户', regCookie !== undefined && parseJson(regMe).me !== undefined && parseJson(regMe).me.role === 'user' && parseJson(regMe).me.email === 'reg1@example.com')
+  // 11) 普通用户不能管理邀请码
+  const deniedInv = await call('POST', '/auth/rpc/inviteCreate', { amount: 1 }, regCookie)
+  check('reg: 普通用户 inviteCreate 403', deniedInv.status === 403)
+  // 12) 管理员撤销邀请码
+  const rev = await call('POST', '/auth/rpc/inviteRevoke', { code: code }, adminB)
+  const list2 = await call('POST', '/auth/rpc/inviteList', {}, adminB)
+  const afterRevoke = (parseJson(list2) || {}).invites !== undefined ? parseJson(list2).invites.some((i) => i.code === code) : true
+  check('reg: 撤销邀请码成功', rev.status === 200 && !afterRevoke)
+}
+
+// ---- 19) TOTP 绑定与移除（0.5.0） ----
+{
+  const serverC = new EventEmitter()
+  serverC.on('request', () => {})
+  const ctxC = {
+    get(n) {
+      if (n === 'credentials') return creds
+      if (n === 'fs') return fsMock
+      if (n === 'webServer') return { server: serverC }
+      return undefined
+    },
+    effect() {},
+    interval() { return () => {} },
+    timeout(ms) { return new Promise((r) => setTimeout(r, ms)) },
+  }
+  apply(ctxC)
+  await new Promise((r) => setTimeout(r, 400))
+  const call = (method, path, body, cookie) => new Promise((resolve) => {
+    const r = makeRes()
+    serverC.emit('request', makeReq(method, path, cookie, body === undefined ? undefined : JSON.stringify(body)), r)
+    setTimeout(() => resolve(r), 80)
+  })
+  const loginC = await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234' })
+  const regC = cookieOf(loginC)
+  check('totp: reg1 登录成功', regC !== undefined)
+  const st0 = await call('POST', '/auth/rpc/totpStatus', {}, regC)
+  check('totp: 初始状态未启用', parseJson(st0).totp !== undefined && parseJson(st0).totp.enabled === false)
+  const gen = await call('POST', '/auth/rpc/totpGenerate', {}, regC)
+  const secret = (parseJson(gen) || {}).secret
+  const otpauth = (parseJson(gen) || {}).otpauth
+  check('totp: 生成密钥（base32 + otpauth URL）', gen.status === 200 && /^[A-Z2-7]{20,}$/.test(secret || '') && typeof otpauth === 'string' && otpauth.indexOf('otpauth://totp/') === 0)
+  const badVerify = await call('POST', '/auth/rpc/totpVerify', { code: '000000' }, regC)
+  check('totp: 错误验证码 403', badVerify.status === 403)
+  const goodCode = totpCodeAt(secret, Date.now() / 1000)
+  const okVerify = await call('POST', '/auth/rpc/totpVerify', { code: goodCode }, regC)
+  check('totp: 正确验证码启用成功', okVerify.status === 200)
+  const me1 = await call('POST', '/auth/rpc/me', {}, regC)
+  check('totp: me 显示已启用且不含 secret', parseJson(me1).me.totpEnabled === true && !JSON.stringify(parseJson(me1).me).includes('totpSecret'))
+  const genAgain = await call('POST', '/auth/rpc/totpGenerate', {}, regC)
+  check('totp: 已启用后再次生成 400', genAgain.status === 400)
+  const rmBad = await call('POST', '/auth/rpc/totpRemove', { code: '000000' }, regC)
+  check('totp: 移除需正确验证码（错误码 403）', rmBad.status === 403)
+  const rmOk = await call('POST', '/auth/rpc/totpRemove', { code: goodCode }, regC)
+  check('totp: 正确验证码移除成功', rmOk.status === 200)
+  const me2 = await call('POST', '/auth/rpc/me', {}, regC)
+  check('totp: 移除后未启用', parseJson(me2).me.totpEnabled === false)
+  const ign = await call('POST', '/auth/rpc/totpIgnore', { ignore: true }, regC)
+  const me3 = await call('POST', '/auth/rpc/me', {}, regC)
+  check('totp: 永久忽略开关生效', ign.status === 200 && parseJson(me3).me.totpIgnore === true)
+  // 管理员移除他人 TOTP（无需该用户验证码）
+  await call('POST', '/auth/rpc/totpGenerate', {}, regC)
+  const adminC = cookieOf(await call('POST', '/auth/login', { username: 'admin', password: adminPassword }))
+  const adminRm = await call('POST', '/auth/rpc/totpRemove', { username: 'reg1' }, adminC)
+  const me4 = await call('POST', '/auth/rpc/me', {}, regC)
+  check('totp: 管理员可移除他人 TOTP', adminRm.status === 200 && parseJson(me4).me.totpEnabled === false)
 }
 
 console.log(failures === 0 ? '\nALL HOST SMOKE TESTS PASSED' : `\n${failures} FAILURES`)

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.0 — 用户注册（邀请码）与 TOTP 两步验证
+
+- **修复**：设置面板「用户管理」输入框宽度超出上级 UI 右边界——补 `box-sizing:
+  border-box`（`width:100%` + padding + border 全部计入宽度），输入框左右边距
+  对称、不越界。
+- **新增**：用户注册（`/auth/register`）——邮箱 + 用户名 + 密码 + **有效邀请码**
+  注册；邮箱暂不校验真实性（可在「用户管理」中自行修改，邮箱验证后续版本提供）。
+- **新增**：邀请码管理（管理员）——`inviteCreate`（生成数量/每码可注册次数）、
+  `inviteList`（每个码的已用/剩余/创建者）、`inviteRevoke`；持久化于 credentials
+  的 `dsh-auth/invites` 记录；登录页增加「注册账号」入口。
+- **新增**：TOTP 两步验证（RFC 6238，纯 JS HMAC-SHA1 实现，零依赖）——
+  `totpGenerate`（base32 密钥 + otpauth URL）、`totpVerify`（启用）、`totpRemove`
+  （本人移除需当前动态码；管理员可移除任意用户）、`totpIgnore`（永久忽略提醒）；
+  未绑定且未忽略的用户每次登录弹窗提醒；用户管理页提供 TOTP 卡片（生成/启用/
+  移除/忽略）。当前版本登录仍以密码为准，免密 TOTP 登录后续版本提供。
+- **测试**：新增 `test/totp-vectors.mjs`（RFC 6238 官方向量 6 组 + 往返一致性 6 项）；
+  host-smoke 新增场景 18（注册/邀请码 13 项）与场景 19（TOTP 12 项）；security-suite
+  新增 REG（11 项）与 TOTP（10 项）组，总计 119/119；全量回归通过；真实部署验证：
+  注册公开端点 6/6、TOTP 全链路 6/6。
+
 ## 0.4.0 — WebSocket 事件流按用户隔离（网络层，无需反向代理）
 
 - **新增**：`/api/events.mux`、`/api/events.host` 两个 WebSocket 升级通道由网关
