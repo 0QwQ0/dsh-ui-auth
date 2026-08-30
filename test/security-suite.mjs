@@ -569,7 +569,17 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
   const code = (parseJson(inv) || {}).codes !== undefined ? parseJson(inv).codes[0] : undefined
   check('REG', '管理员生成邀请码（8 位去混淆字符集）', inv.status === 200 && typeof code === 'string' && /^[A-Z2-9]{8}$/.test(code))
   const okReg = await postReg({ username: 'regs3', password: 'regs3-pw-1234', email: 'regs3@example.com', invite: code })
-  check('REG', '有效邀请码注册成功', okReg.status === 200 && parseJson(okReg).ok === true)
+  check('REG', '有效邀请码注册成功（自动登录 + 引导页 redirect）', okReg.status === 200 && parseJson(okReg).ok === true && /dsh_auth=/.test(okReg.headers['set-cookie'] || '') && parseJson(okReg).redirect === '/auth/register/success')
+  // 引导页：带注册会话可访问，未登录重定向
+  const regs3Cookie = /dsh_auth=([^;]+)/.exec(okReg.headers['set-cookie'] || '')[1]
+  const succPage = makeRes()
+  server.emit('request', makeReq('GET', '/auth/register/success', regs3Cookie, undefined), succPage)
+  await settle()
+  check('REG', '注册引导页含「立即添加 TOTP」', succPage.status === 200 && succPage.body.includes('立即添加 TOTP'))
+  const succNoLogin = makeRes()
+  server.emit('request', makeReq('GET', '/auth/register/success', undefined, undefined), succNoLogin)
+  await settle()
+  check('REG', '未登录访问引导页 → 302 登录页', succNoLogin.status === 302 && (succNoLogin.headers.location || '').startsWith('/auth/login'))
   const exhausted = await postReg({ username: 'regs4', password: 'regs4-pw-1234', email: '', invite: code })
   check('REG', '邀请码次数耗尽 → 403', exhausted.status === 403)
   const denied = makeRes()

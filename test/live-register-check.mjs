@@ -61,9 +61,12 @@ const main = async () => {
   check('用户名格式非法 → 400', badName.status === 400)
   const malformed = await retryPost(undefined, '{oops not json')
   check('畸形 JSON → 400', malformed.status === 400)
+  // 注册成功引导页：未登录访问 → 302 登录页
+  const guide = await get('/auth/register/success')
+  check('引导页未登录 → 302 登录页', guide.status === 302 && (guide.headers.location || '').startsWith('/auth/login'), 'status=' + guide.status)
   const failed = results.filter((r) => !r.ok)
   console.log('\nLIVE REGISTER CHECK: ' + (results.length - failed.length) + '/' + results.length + ' passed')
-  console.log('提示：有效邀请码的完整注册链路需管理员在【用户管理】→【邀请码管理】生成后验证。')
+  console.log('提示：有效邀请码的完整注册链路（注册 → 自动登录 → TOTP 引导页）需管理员在【用户管理】→【邀请码管理】生成后验证。')
   process.exit(failed.length === 0 ? 0 : 1)
 }
 main().catch((e) => { console.error('LIVE REGISTER CHECK ERROR: ' + String(e)); process.exit(1) })

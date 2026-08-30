@@ -6,7 +6,9 @@
   border-box`（`width:100%` + padding + border 全部计入宽度），输入框左右边距
   对称、不越界。
 - **修复**：用户管理表格「角色」列由「管理员/普通用户」简化为「管理/用户」徽章，
-  避免长文本换行。
+  并加 `white-space:nowrap` 禁止换行。
+- **新增**：注册成功引导页——注册成功即自动登录并跳转 `/auth/register/success`，
+  页面推荐立即添加 TOTP 两步验证令牌（内置生成/扫码/启用流程），也可跳过返回首页。
 - **新增**：TOTP 绑定二维码——生成密钥时同时返回二维码图片（`qrcode` 库生成
   SVG data URL，host 侧零 canvas 依赖），用户可用 Google/Microsoft Authenticator
   扫码添加（无法扫码时仍可手动输入密钥/otpauth 链接）；注册场景共用同一卡片。

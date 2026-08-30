@@ -831,9 +831,15 @@ if (disposers.length > 0) {
   // 3) 注册页可达
   const page = await call('GET', '/auth/register')
   check('reg: 注册页 200', page.status === 200 && page.body.includes('邀请码'))
-  // 4) 有效邀请码注册成功（无 cookie）
+  // 4) 有效邀请码注册成功（自动登录并跳转 TOTP 引导页）
   const reg1 = await call('POST', '/auth/register', { username: 'reg1', password: 'reg1-pw-1234', email: 'reg1@example.com', invite: code })
-  check('reg: 有效邀请码注册成功', reg1.status === 200 && parseJson(reg1).ok === true, 'status=' + reg1.status + ' body=' + reg1.body)
+  const reg1AutoCookie = cookieOf(reg1)
+  check('reg: 有效邀请码注册成功（自动登录 + 引导页 redirect）', reg1.status === 200 && parseJson(reg1).ok === true && reg1AutoCookie !== undefined && parseJson(reg1).redirect === '/auth/register/success', 'status=' + reg1.status + ' body=' + reg1.body)
+  // 4b) 注册成功引导页：带 cookie 可访问，未登录重定向
+  const successPage = await call('GET', '/auth/register/success', undefined, reg1AutoCookie)
+  check('reg: 引导页可达（含「立即添加 TOTP」）', successPage.status === 200 && successPage.body.includes('立即添加 TOTP') && successPage.body.includes('两步验证'))
+  const successNoCookie = await call('GET', '/auth/register/success')
+  check('reg: 未登录访问引导页 → 302 登录页', successNoCookie.status === 302 && (successNoCookie.headers.location || '').startsWith('/auth/login'))
   // 5) 同一码第二次注册成功（uses=2）
   const reg2 = await call('POST', '/auth/register', { username: 'reg2', password: 'reg2-pw-1234', email: '', invite: code })
   check('reg: 同一码第二次注册成功（可注册 2 次）', reg2.status === 200)
