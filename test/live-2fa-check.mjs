@@ -39,14 +39,14 @@ const main = async () => {
     }
     return { status: 0, body: 'timeout' }
   }
-  // 1) test1 密码登录 → totpRequired（无 cookie）
+  // 1) test1（已绑定 TOTP）默认 2FA 关闭：密码直接登录成功（无需动态码）
   const s1 = await retry(() => post('/auth/login', { username: 'test1', password: '12345678' }, '10.4.0.1'))
   const j1 = JSON.parse(s1.body || '{}')
-  check('test1 密码登录 → totpRequired（不签发会话）', s1.status === 200 && j1.totpRequired === true && !(s1.headers['set-cookie'] || '').includes('dsh_auth='), s1.body.slice(0, 80))
-  // 2) 密码 + 错误动态码 → 403
+  check('test1 密码登录 → 成功（绑定后默认 2FA 关闭）', s1.status === 200 && j1.totpRequired !== true && /dsh_auth=/.test(s1.headers['set-cookie'] || ''), s1.body.slice(0, 80))
+  // 2) 2FA 关闭时密码 + 任意动态码 → 仍成功（动态码非必需）
   const s2 = await retry(() => post('/auth/login', { username: 'test1', password: '12345678', totp: '000000' }, '10.4.0.2'))
-  check('密码 + 错误动态码 → 403', s2.status === 403, s2.body.slice(0, 80))
-  // 3) 免密 + 错误动态码 → 403
+  check('2FA 关闭时密码 + 动态码（任意）仍成功', s2.status === 200, s2.body.slice(0, 80))
+  // 3) 免密 + 错误动态码 → 403（免密路径始终验证动态码）
   const s3 = await retry(() => post('/auth/login', { username: 'test1', totp: '000000' }, '10.4.0.3'))
   check('免密 TOTP + 错误动态码 → 403', s3.status === 403, s3.body.slice(0, 80))
   // 4) 不存在的用户免密 → 401 通用文案（防账号枚举回归）
@@ -54,7 +54,7 @@ const main = async () => {
   check('不存在用户免密 → 401 通用文案（防枚举）', s4.status === 401 && JSON.parse(s4.body).error === '用户名或密码错误', s4.body.slice(0, 80))
   const failed = results.filter((r) => !r.ok)
   console.log('\nLIVE 2FA CHECK: ' + (results.length - failed.length) + '/' + results.length + ' passed')
-  console.log('提示：请在浏览器中验证完整两步登录（test1 密码 → 输入 Authenticator 动态码 → 登录成功）与免密 TOTP 登录。')
+  console.log('提示：请在浏览器中验证 2FA 开关——test1 登录后在【用户管理】勾选「启用两步验证」，再登录（需密码 + Authenticator 动态码）；取消勾选后密码或动态码任选其一。')
   process.exit(failed.length === 0 ? 0 : 1)
 }
 main().catch((e) => { console.error('LIVE 2FA CHECK ERROR: ' + String(e)); process.exit(1) })

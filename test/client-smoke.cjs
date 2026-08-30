@@ -115,6 +115,7 @@ const tick = () => new Promise((r) => setTimeout(r, 20))
   check('TOTP card present (两步验证)', code.includes('两步验证（TOTP）') && code.includes('totpGenerate') && code.includes('totpVerify'))
   check('TOTP QR image rendering present', code.includes('TOTP 二维码') && code.includes('tQrUrl') && code.includes('src: tQrUrl'))
   check('TOTP login reminder present (showTotpReminder)', code.includes('showTotpReminder') && code.includes('建议开启两步验证') && code.includes('totpIgnore'))
+  check('TOTP reminder once per session (sessionStorage gate + logout clear)', code.includes('dshua-totp-reminded') && code.includes('sessionStorage'))
   check('invite management card present (邀请码管理)', code.includes('邀请码管理（管理员）') && code.includes('inviteCreate') && code.includes('inviteList'))
 
   console.log(failures === 0 ? '\nCLIENT BUNDLE SMOKE TEST PASSED' : `\n${failures} FAILURES`)

@@ -944,33 +944,43 @@ if (disposers.length > 0) {
     serverD.emit('request', makeReq(method, path, cookie, body === undefined ? undefined : JSON.stringify(body)), r)
     setTimeout(() => resolve(r), 80)
   })
-  // 用 reg1（场景 18 创建，密码 reg1-pw-1234），先启用 TOTP
+  // 用 reg1（场景 18 创建，密码 reg1-pw-1234），先启用 TOTP（默认 2FA 关闭）
   const reg1c = cookieOf(await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234' }))
   const gen = await call('POST', '/auth/rpc/totpGenerate', {}, reg1c)
   const secret = (parseJson(gen) || {}).secret
   const good = totpCodeAt(secret, Date.now() / 1000)
   await call('POST', '/auth/rpc/totpVerify', { code: good }, reg1c)
-  // 1) 密码正确 → totpRequired（不签发会话）
-  const s1 = await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234' })
-  check('2fa: 密码正确但要求 TOTP（不签发会话）', s1.status === 200 && parseJson(s1).totpRequired === true && !(s1.headers['set-cookie'] || '').includes('dsh_auth='))
-  // 2) 密码 + TOTP → 登录成功
-  const s2 = await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234', totp: good })
-  check('2fa: 密码 + TOTP 两步登录成功', s2.status === 200 && /dsh_auth=/.test(s2.headers['set-cookie'] || ''))
-  // 3) 密码正确但 TOTP 错误 → 403
-  const s3 = await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234', totp: '000000' })
-  check('2fa: TOTP 错误 → 403', s3.status === 403)
-  // 4) 免密 TOTP → 登录成功
+  const st0 = await call('POST', '/auth/rpc/totpStatus', {}, reg1c)
+  check('2fa: 绑定后默认不开启两步验证', parseJson(st0).totp.twoFactor === false)
+  // 1) 绑定 TOTP 但 2FA 关闭：密码直接登录（无需动态码）
+  const s0 = await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234' })
+  check('2fa: 2FA 关闭时密码直接登录成功', s0.status === 200 && parseJson(s0).totpRequired !== true && /dsh_auth=/.test(s0.headers['set-cookie'] || ''))
+  // 2) 2FA 关闭：免密 TOTP 登录成功（密码或动态码二选一）
+  const s1 = await call('POST', '/auth/login', { username: 'reg1', totp: good })
+  check('2fa: 2FA 关闭时免密 TOTP 登录成功', s1.status === 200 && /dsh_auth=/.test(s1.headers['set-cookie'] || ''))
+  // 3) 开启两步验证开关
+  const on = await call('POST', '/auth/rpc/totpSet2fa', { enabled: true }, reg1c)
+  const st1 = await call('POST', '/auth/rpc/totpStatus', {}, reg1c)
+  check('2fa: 开启两步验证开关生效', on.status === 200 && parseJson(st1).totp.twoFactor === true)
+  // 4) 2FA 开启：密码正确但要求动态码（不签发会话）
+  const s2 = await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234' })
+  check('2fa: 开启后密码登录要求动态码（不签发会话）', s2.status === 200 && parseJson(s2).totpRequired === true && !(s2.headers['set-cookie'] || '').includes('dsh_auth='))
+  // 5) 2FA 开启：密码 + TOTP → 登录成功
+  const s3 = await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234', totp: good })
+  check('2fa: 开启后密码 + 动态码两步登录成功', s3.status === 200 && /dsh_auth=/.test(s3.headers['set-cookie'] || ''))
+  // 6) 2FA 开启：免密 TOTP 被拒（强制两者）
   const s4 = await call('POST', '/auth/login', { username: 'reg1', totp: good })
-  check('2fa: 免密 TOTP 登录成功', s4.status === 200 && /dsh_auth=/.test(s4.headers['set-cookie'] || ''))
-  // 5) 免密 TOTP 错误 → 403
-  const s5 = await call('POST', '/auth/login', { username: 'reg1', totp: '000000' })
-  check('2fa: 免密 TOTP 错误 → 403', s5.status === 403)
-  // 6) 未启用 TOTP 的账号免密 → 400
+  check('2fa: 开启后免密 TOTP 被拒（403）', s4.status === 403)
+  // 7) 2FA 开启：密码 + 错误动态码 → 403
+  const s5 = await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234', totp: '000000' })
+  check('2fa: 开启后动态码错误 → 403', s5.status === 403)
+  // 8) 未启用 TOTP 的账号免密 → 400
   const s6 = await call('POST', '/auth/login', { username: 'admin', totp: '000000' })
   check('2fa: 未启用 TOTP 的账号免密登录 → 400', s6.status === 400)
-  // 7) 仅密码无 TOTP 且未启用 → 正常登录（回归：普通登录不受影响）
-  const s7 = await call('POST', '/auth/login', { username: 'admin', password: adminPassword })
-  check('2fa: 未启用 TOTP 的账号密码登录照常', s7.status === 200 && /dsh_auth=/.test(s7.headers['set-cookie'] || ''))
+  // 9) 关闭两步验证 → 密码直接登录恢复
+  await call('POST', '/auth/rpc/totpSet2fa', { enabled: false }, reg1c)
+  const s7 = await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234' })
+  check('2fa: 关闭后密码直接登录恢复', s7.status === 200 && parseJson(s7).totpRequired !== true && /dsh_auth=/.test(s7.headers['set-cookie'] || ''))
   // 清理：移除 reg1 的 TOTP
   await call('POST', '/auth/rpc/totpRemove', { code: good }, reg1c)
 }
