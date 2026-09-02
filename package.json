@@ -1,6 +1,6 @@
 {
   "name": "dsh-ui-auth",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "DSH Web UI 认证网关：登录保护全部 HTTP/WS 接口；用户管理、邀请码注册与 TOTP 两步验证。",
   "type": "module",
   "main": "./lib/index.js",
@@ -11,6 +11,7 @@
   },
   "files": [
     "lib",
+    "docs",
     "cordis.patch.yml",
     "LICENSE",
     "README.md",
@@ -18,7 +19,8 @@
   ],
   "scripts": {
     "test": "node --check lib/index.js && node --check lib/client.js && node test/crypto-vectors.cjs && node test/totp-vectors.mjs && node test/client-smoke.cjs && node test/host-smoke.mjs && node test/security-suite.mjs",
-    "prepack": "node --check lib/index.js && node --check lib/client.js && node test/crypto-vectors.cjs && node test/totp-vectors.mjs && node test/client-smoke.cjs && node test/host-smoke.mjs && node test/security-suite.mjs"
+    "prepack": "node --check lib/index.js && node --check lib/client.js && node test/crypto-vectors.cjs && node test/totp-vectors.mjs && node test/client-smoke.cjs && node test/host-smoke.mjs && node test/security-suite.mjs",
+    "store:check": "node scripts/store-contract-check.mjs"
   },
   "dsh": {
     "bundle": {
@@ -26,6 +28,15 @@
     },
     "client": {
       "platform": "web"
+    },
+    "compatibility": {
+      "dsh": ">=0.1.1-rc.2 <0.2.0",
+      "dshReleases": {
+        "0.1.1-rc.2": "compatible"
+      },
+      "profiles": [
+        "web"
+      ]
     }
   },
   "peerDependencies": {

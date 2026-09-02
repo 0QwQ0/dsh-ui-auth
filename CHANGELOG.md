@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.5.2 — DSH STORE 上架整改（catalog-blocked 修复）
+
+回应 DSH STORE 自动检查（issue #327，`catalog-blocked`），全部为声明/文档/证据类
+改动，无运行逻辑变化：
+
+- **manifest 兼容声明**：`package.json` 新增 `dsh.compatibility`——DSH 范围
+  `>=0.1.1-rc.2 <0.2.0`、精确逐版本矩阵 `{"0.1.1-rc.2":"compatible"}`、profile
+  `["web"]`；`engines.node` 保持 `>=22.19.0`。源码改动必须伴随版本提升，目录自动化
+  才会重新固定 Commit（0.5.1 → 0.5.2）。
+- **一次性 Profile 证据**：新增 [docs/STORE-EVIDENCE.md](docs/STORE-EVIDENCE.md)——
+  在临时 `DSH_HOME` + 临时工作目录 + 临时端口上对 `dsh-v0.1.1-rc.2` 实跑
+  install → `--dump-config`（entry 注入）→ 冷启动（`/` 302 到 `/auth/login`、
+  未认证 API 401、bootstrap 管理员端到端登录 200 + `dsh_auth` cookie）→
+  remove（组合 0 命中、bundles 还原）→ 卸载后冷启动差异验证（`/` 200，网关消失）；
+  并核对真实部署目录零写入。
+- **依赖/权限/外部服务/失败边界文档化**：`qrcode`（唯一运行依赖，MIT，供应链说明）、
+  权限表（files=私有状态 write / network=仅宿主自身服务器、无出站 / commands=none /
+  credentials=自有 realm 经 DSH credentials 服务、无明文口令 → 汇总 high）、
+  无外部服务、失败边界清单。
+- **自检脚本**：新增 `scripts/store-contract-check.mjs`（`npm run store:check`）复刻
+  Catalog 固定源门禁的仓库侧可控项（20 项硬门禁），权限信号仅来自 `lib/` 运行时代码。
+- **README 纠偏**：修正 0.5.1 加固后过时表述（会话落盘已为 SHA-256 哈希、Secure
+  Cookie 动态启用、会话持久化），并新增「DSH STORE 上架声明」小节。
+
+说明：凭据/网络能力是认证类插件的功能本体，`source-verified` 自动通道按设计不适用；
+本插件按 `user-reviewed` 人工审查路径评估，条目状态由 DSH STORE 自动化维护。
+
 ## 0.5.1 — 安全加固（依据外部安全审计核验实施）
 
 依据安全工程师审计报告核验后实施的 5 项加固：

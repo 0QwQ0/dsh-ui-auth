@@ -85,8 +85,8 @@
   `dsh-auth/<用户名>` 记录），重启后用户、角色、资料、密码、TOTP 绑定全部保留；
   邀请码存于 `dsh-auth/invites` 记录，TOTP 密钥（base32）随用户记录持久化。
 - **会话（0.4.0）**：登录会话定期落盘到 fs 服务工作目录的
-  `dsh-ui-auth-sessions.json`，**重启面板后未过期会话免登录恢复**（token 明文
-  落盘等价于"记住登录态"，文件仅属主可读写；过期/登出/改密后即失效）。
+  `dsh-ui-auth-sessions.json`，**重启面板后未过期会话免登录恢复**（0.5.1 起磁盘只存
+  会话 token 的 SHA-256 哈希，不再有明文 token；过期/登出/改密后即失效）。
 - **审计（0.4.0）**：管理员操作（增删用户、重置密码、改角色、改密）与普通用户
   越权尝试写入 fs 服务工作目录的 `dsh-ui-auth-audit.jsonl`（JSONL，每行含
   `t`/`actor`/`action`/`target` 等字段），便于事后追溯。
@@ -154,11 +154,25 @@ $env:DSH_AUTH_MAX_FAILS = '10'; $env:DSH_AUTH_LOCK_MS = '60000'; $env:DSH_AUTH_T
 
 - 公网安全验证详见 [SECURITY.md](SECURITY.md)（威胁模型、75 项安全用例矩阵、
   OWASP Top 10 覆盖率、残余风险与部署加固清单）；本地复现：`node test/security-suite.mjs`。
-- Cookie 未加 `Secure` 标记：公网部署请放在 HTTPS 反向代理之后，由代理终结 TLS
-  并在转发时保留 Host，DSH 自身按 `127.0.0.1` 或内网监听即可。
+- Secure Cookie（0.5.1）：TLS 直连或（仅在信任反代时）`X-Forwarded-Proto: https`
+  下，`dsh_auth` Cookie 自动追加 `Secure`。公网部署仍建议放在 HTTPS 反向代理之后、
+  由代理终结 TLS 并保留 Host，DSH 自身按 `127.0.0.1` 或内网监听。
 - 登录限流按来源 IP（默认 `req.socket.remoteAddress`）：反向代理场景下会聚合为代理
   的 IP，可设置 `DSH_AUTH_TRUST_PROXY=1` 改按 `X-Forwarded-For` 真实客户端计数
   （见「配置」）。
-- 会话仅存内存：重启后所有用户需重新登录。
+- 会话有持久化（见「持久化」）：重启面板后未过期会话自动恢复；升级到 0.5.1+
+  时旧版明文会话记录失效一次，所有用户需重新登录。
 - 与 DSH 自带的 `/api` DNS-rebinding 信任栅栏叠加使用：该栅栏“明确不是认证”，
   本插件才是真正的前置认证层。
+
+## DSH STORE 上架声明（0.5.2）
+
+- **兼容性声明**：manifest `package.json` 的 `dsh.compatibility` 声明 DSH 范围
+  `>=0.1.1-rc.2 <0.2.0` 与逐版本矩阵（精确 `compatible`：`0.1.1-rc.2`，其余未验证
+  版本保持 `unknown`）；`engines.node` 声明 `>=22.19.0`。
+- **依赖/权限/外部服务/失败边界**：完整作者侧证据与声明见
+  [docs/STORE-EVIDENCE.md](docs/STORE-EVIDENCE.md)（一次性 Profile 的
+  install/start/uninstall 实录、`qrcode` 依赖说明、权限表、无外部服务、失败边界）。
+- 本插件属**凭据/网络能力类**（登录保护必须读写凭据并接管宿主 HTTP/WS 入口），
+  自动 `source-verified` 通道按设计不适用，应按 `user-reviewed` 人工审查路径评估；
+  本地契约自检：`npm run store:check`。
