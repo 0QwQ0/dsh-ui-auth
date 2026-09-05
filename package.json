@@ -18,9 +18,10 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "test": "node --check lib/index.js && node --check lib/client.js && node test/crypto-vectors.cjs && node test/totp-vectors.mjs && node test/client-smoke.cjs && node test/host-smoke.mjs && node test/security-suite.mjs",
-    "prepack": "node --check lib/index.js && node --check lib/client.js && node test/crypto-vectors.cjs && node test/totp-vectors.mjs && node test/client-smoke.cjs && node test/host-smoke.mjs && node test/security-suite.mjs",
-    "store:check": "node scripts/store-contract-check.mjs"
+    "test": "node --check lib/index.js && node --check lib/client.js && node test/crypto-vectors.cjs && node test/totp-vectors.mjs && node test/client-smoke.cjs && node test/host-smoke.mjs && node test/security-suite.mjs && node test/modern-policy.test.mjs",
+    "prepack": "npm test",
+    "store:check": "node scripts/store-contract-check.mjs",
+    "test:compat:0.1.2": "node test/modern-dsh.test.mjs"
   },
   "dsh": {
     "bundle": {
@@ -43,7 +44,8 @@
     "@deepseek-ai/cordis": "^4.0.1"
   },
   "dependencies": {
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "ws": "^8.21.0"
   },
   "engines": {
     "node": ">=22.19.0"

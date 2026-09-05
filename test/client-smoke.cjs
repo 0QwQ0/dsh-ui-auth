@@ -18,7 +18,7 @@ const window = {
   },
 }
 
-const code = fs.readFileSync('F:/aura/pluginDev/dsh-ui-auth/lib/client.js', 'utf8')
+const code = fs.readFileSync(require('node:path').join(__dirname, '../lib/client.js'), 'utf8')
 new Function('window', code)(window)
 
 if (registrations.length !== 1) {

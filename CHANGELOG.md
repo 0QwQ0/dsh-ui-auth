@@ -1,5 +1,14 @@
 # Changelog
 
+
+## Unreleased
+
+- Add a DSH 0.1.2 Connection/Typert adapter for slash RPCs, durable Session addresses, Remote mux streams and scoped interactive replies.
+- Deny unreviewed ordinary-user endpoints and expose a trusted Host policy/ownership seam for downstream plugins.
+- Persist creation ownership before returning success, retain native browser trust checks, and revoke long connections after logout.
+- Remove the dependency on the legacy timer service, support current CredentialKey constraints, and make the client smoke test portable.
+- Add policy regressions and opt-in integration against real, unmodified DSH services.
+
 ## 0.5.2 — DSH STORE 上架整改（catalog-blocked 修复）
 
 回应 DSH STORE 自动检查（issue #327，`catalog-blocked`），全部为声明/文档/证据类
