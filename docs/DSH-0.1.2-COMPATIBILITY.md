@@ -37,6 +37,7 @@ On a modern Host the plugin provides `ctx.get('uiAuth')`. Only trusted Host plug
 
 | Method | Contract |
 | --- | --- |
+| `user(username)` | Current active account principal for trusted background execution, or undefined after deletion. |
 | `ready` | Promise resolving after account and ownership state has loaded. Await it in Host provisioning code. |
 | `principal(request)` | Immutable `{ username, role }` for this admitted IncomingMessage, or undefined. Never derive identity from user-supplied headers or a body field. |
 | `ownerOfSession(id)` / `ownerOfWorkspace(id)` | Current recorded owner; unclaimed objects resolve to admin. |
@@ -100,3 +101,20 @@ The test uses that checkout's real Cordis, Credentials, WebServer, Connection an
 Covered behaviors include native-index access after plugin login; nested Session addresses; other-user denial; filtered list/control/Host event frames; durable create attribution; default-closed custom APIs and explicit policy admission; logout revocation; three accounts; approval reply correlation and hidden recipients; current CredentialKey validation.
 
 Full browser acceptance, deployment-specific Workspace provisioning, background object ownership, downstream state partitioning and arbitrary third-party plugins remain separate integration gates. `147/147` in the existing security suite is that suite's result, not a universal security certification.
+
+## Deployment integration refinements
+
+The adapter treats `SessionPersistenceNotFoundError` as absence when checking a new client-minted Session id, while preserving other storage failures. Retired usernames are persisted and cannot be registered again, preventing a new account from inheriting an earlier account's ownership mappings. Internal metadata names use hashed user record keys.
+
+A policy can add a unary Remote restriction without replacing the built-in authorization or response projection:
+
+```js
+{ remote: {
+  matches: endpoint => endpoint === 'session/create',
+  authorize: (_principal, payload) => !payload.args.request.agentPreset || allowedPresets.has(payload.args.request.agentPreset),
+} }
+```
+
+All matching restrictions must allow the request; core ownership checks still apply. This is suitable for deployment-specific Preset allowlists.
+
+A reviewed `rpc` policy has `matches(endpoint)`, `authorize(principal, payload)` and `project(principal, value)`. It replaces the built-in rule for exactly the matched unary endpoint, while all `remote` restrictions still apply. Use it only for an explicit, owned capability such as a deployment's safe command subset; `$events/result` cannot be overridden by this mechanism.

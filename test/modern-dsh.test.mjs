@@ -75,7 +75,7 @@ test('current DSH authentication, RPC, streams and downstream policies', { timeo
       resolve: id => id === 'a' ? agentContext : undefined,
     })
     ctx.provide('sessions', { get: () => undefined })
-    ctx.provide('sessionPersistence', { inspect: async () => undefined })
+    ctx.provide('sessionPersistence', { inspect: async () => { const error = new Error('fixture absent'); error.name = 'SessionPersistenceNotFoundError'; throw error } })
     ctx.webServer.registerFallback((req, res) => {
       if (ctx.connection.authorizeIndex(req, res)) res.end('native shell')
     })
@@ -119,7 +119,7 @@ test('current DSH authentication, RPC, streams and downstream policies', { timeo
     assert.equal((await rpc(alice, 'session/page', { request: { address: { kind: 'session', sessionId: 'b' }, throughSeq: -1 } })).status, 403)
     assert.equal((await rpc(alice, 'credentials/set', { ref: 'SECRET', value: 'bad' })).status, 403)
     assert.deepEqual((await (await rpc(alice, 'session/list', { _request: {} })).json()).result.value.items, [{ sessionId: 'a' }])
-    const created = await (await rpc(alice, 'session/create', { request: { workspaceId: 'wa' } })).json()
+    const created = await (await rpc(alice, 'session/create', { request: { workspaceId: 'wa', sessionId: 'new-explicit-session' } })).json()
     assert.equal(created.result.ok, true)
     const persisted = JSON.parse((await ctx.credentials.readRecord('dsh-auth/ownership')).payload)
     assert.equal(persisted.sessions[created.result.value.sessionId], 'alice')
@@ -189,6 +189,25 @@ test('current DSH authentication, RPC, streams and downstream policies', { timeo
     })
     assert.equal(customUser.status, 200, 'valid usernames must survive current CredentialKey validation')
     assert.ok(await login('Alice.Team_2'))
+    const removed = await fetch(origin + '/auth/rpc/deleteUser', { method: 'POST', headers: { cookie: admin }, body: JSON.stringify({ username: 'Alice.Team_2' }) })
+    assert.equal(removed.status, 200)
+    assert.equal(ctx.uiAuth.user('Alice.Team_2'), undefined)
+    const reused = await fetch(origin + '/auth/rpc/createUser', { method: 'POST', headers: { cookie: admin }, body: JSON.stringify({ username: 'Alice.Team_2', password: fixturePassword }) })
+    assert.equal(reused.status, 409, 'retired identities cannot inherit earlier ownership')
+    const releaseGuard = ctx.uiAuth.registerPolicy('preset-guard', { remote: {
+      matches: endpoint => endpoint === 'session/create',
+      authorize: (_who, payload) => payload.args.request.agentPreset !== 'unreviewed',
+    } })
+    assert.equal((await rpc(alice, 'session/create', { request: { workspaceId: 'wa', agentPreset: 'unreviewed' } })).status, 403)
+    releaseGuard()
+    const releaseRpc = ctx.uiAuth.registerPolicy('rpc-restriction', { rpc: {
+      matches: endpoint => endpoint === 'session/page',
+      authorize: () => false, project: (_principal, value) => value,
+    } })
+    assert.equal((await rpc(alice, 'session/page', { request: { address: { kind: 'session', sessionId: 'a' }, throughSeq: -1 } })).status, 403)
+    releaseRpc()
+
+
 
     // Unreviewed downstream business routes are closed until their owner registers a policy.
     ctx.webServer.register({ kind: 'exact', path: '/api/example/private', handler(req, res) {
