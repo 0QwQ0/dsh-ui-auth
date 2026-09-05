@@ -5,6 +5,12 @@
 在 DSH Web UI 前套一层用户名/密码登录校验，未登录用户无法访问任何页面、API
 或 WebSocket 通道。
 
+## DSH 0.1.2 兼容适配（未发布）
+
+新增适配当前斜杠 RPC、`payload.args`、`/api/remote.mux` 和 `$events` 交互回执的网关；旧版 Host 保留原适配。新版普通用户默认拒绝未审查接口，业务插件可通过 `uiAuth` 注册 HTTP/WS/逻辑流访问策略，并在自己的存储与事件中落实对象归属。登录不等于任意业务插件的数据隔离。
+
+新版 Workspace 由维护者或可信部署插件分配；普通用户只能在自己的 Workspace 中创建会话，不能用 `cwd` 覆盖到任意目录。完整约束、扩展接口和真实 DSH 回归命令见 [0.1.2 兼容说明](docs/DSH-0.1.2-COMPATIBILITY.md)。该贡献尚不宣称完整多租户或任意插件兼容。
+
 ## 功能
 
 - **全接口拦截**：直接包装 DSH 的 `node:http` 服务器，在路由分发之前检查会话，
@@ -113,8 +119,8 @@ dsh plugin --profile web add "link:F:/aura/pluginDev/dsh-ui-auth"
 dsh plugin --profile web add dsh-ui-auth
 ```
 
-运行时依赖：`qrcode`（生成 TOTP 绑定二维码，纯 JS 无原生依赖；`dsh plugin add`
-会自动安装；本地 link 安装后如提示缺少依赖，在插件目录执行一次 `npm install`）。
+运行时依赖：`qrcode`（生成 TOTP 绑定二维码）和 `ws`（新版 Remote mux 标准 WebSocket 实现），均无必需原生依赖；`dsh plugin add`
+会自动安装；本地 link 安装后如提示缺少依赖，在插件目录执行一次 `npm install`。
 
 bundle 层在**启动时**应用（挂载 Host 网关 + 发现客户端模块），因此首次安装需
 重启一次面板生效。
