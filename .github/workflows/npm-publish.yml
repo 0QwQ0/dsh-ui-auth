@@ -1,0 +1,120 @@
+# 基于 GitHub 官方 "Publish Node.js Package" 模板，外加定时同步：
+# - release: published → 立即发布该 Release（模板行为）
+# - schedule           → 每天检查「最新 Release 的版本是否已在 npm」，缺则补发布
+# - workflow_dispatch  → 手动补发布
+#
+# 需要仓库 Secret：NPM_TOKEN —— granular access token，权限 Packages: Read and write，
+# Scope 限定到本包，并开启 "Bypass 2FA when using this token"（否则发布会被 2FA 拦下）。
+# 也支持 npm Trusted Publishing（OIDC，无需 secret）：在 npmjs.com 为本仓库+本 workflow
+# 配置 Trusted Publisher 后，删除下面 Publish 步骤的 NODE_AUTH_TOKEN 即可。
+name: Publish Node.js Package
+
+on:
+  release:
+    types: [published]
+  schedule:
+    # 每天 03:17 UTC 同步一次（避开整点，减少排队）
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # npm provenance（发布为 --provenance 时需要）
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # devDependencies 只有 puppeteer（仅本地 live/截图脚本使用），CI 不需要，避免下载 Chromium
+      - run: npm ci --omit=dev --no-audit --no-fund
+      - run: npm test
+
+  publish-npm:
+    name: Publish to npm
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve the latest release
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if ! tag=$(gh release view --json tagName -q .tagName 2>/dev/null); then
+            echo "::notice::仓库还没有 Release，跳过"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "::notice::目标 Release: $tag"
+
+      - uses: actions/checkout@v4
+        if: steps.target.outputs.skip != 'true'
+        with:
+          ref: ${{ steps.target.outputs.tag }}
+
+      - uses: actions/setup-node@v4
+        if: steps.target.outputs.skip != 'true'
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Verify the tag matches package.json
+        if: steps.target.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          manifest=$(node -p "require('./package.json').version")
+          if [ "$manifest" != "${{ steps.target.outputs.version }}" ]; then
+            echo "::error::Release tag ${{ steps.target.outputs.tag }} 与 package.json ($manifest) 不一致，拒绝发布"
+            exit 1
+          fi
+
+      - name: Check whether this version is already on npm
+        id: npmcheck
+        if: steps.target.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          if npm view "dsh-ui-auth@${{ steps.target.outputs.version }}" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::dsh-ui-auth@${{ steps.target.outputs.version }} 已在 npm，跳过发布"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::准备发布 dsh-ui-auth@${{ steps.target.outputs.version }}"
+          fi
+
+      - name: Require the NPM_TOKEN secret
+        if: steps.target.outputs.skip != 'true' && steps.npmcheck.outputs.published == 'false'
+        env:
+          TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${TOKEN}" ]; then
+            echo "::error::缺少仓库 Secret NPM_TOKEN（granular token，Packages: Read and write，开启 Bypass 2FA）"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        if: steps.target.outputs.skip != 'true' && steps.npmcheck.outputs.published == 'false'
+        run: npm ci --omit=dev --no-audit --no-fund
+
+      # npm publish 会触发 prepack（= npm test：147 项安全套件 + modern 策略回归）
+      - name: Publish
+        if: steps.target.outputs.skip != 'true' && steps.npmcheck.outputs.published == 'false'
+        run: npm publish --provenance --access public --registry=https://registry.npmjs.org
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Report
+        if: steps.target.outputs.skip != 'true' && steps.npmcheck.outputs.published == 'true'
+        run: echo "::notice::dsh-ui-auth@${{ steps.target.outputs.version }} 已是最新，无需操作"

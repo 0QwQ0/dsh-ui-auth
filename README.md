@@ -192,3 +192,45 @@ $env:DSH_AUTH_MAX_FAILS = '10'; $env:DSH_AUTH_LOCK_MS = '60000'; $env:DSH_AUTH_T
 - 本插件属**凭据/网络能力类**（登录保护必须读写凭据并接管宿主 HTTP/WS 入口），
   自动 `source-verified` 通道按设计不适用，应按 `user-reviewed` 人工审查路径评估；
   本地契约自检：`npm run store:check`。
+
+## 自动发布到 npm（GitHub Actions）
+
+[`.github/workflows/npm-publish.yml`](.github/workflows/npm-publish.yml) 以 GitHub 官方
+"Publish Node.js Package" 模板为骨架，并加了**定时同步**与幂等保护：
+
+| 触发 | 行为 |
+|---|---|
+| `release: published` | 发布该 Release（模板行为） |
+| `schedule`（每天 03:17 UTC） | 取**最新 Release**，若其版本尚未在 npm 则补发布 |
+| `workflow_dispatch` | 手动补发布 |
+
+流程要点：
+
+1. `build` job 先跑 `npm ci --omit=dev` + `npm test`（147 项安全套件 + modern 策略回归）；
+2. `publish-npm` job 解析最新 Release tag，**校验 tag 与 `package.json` 版本一致**（不一致直接失败，
+   避免发布与 Release 不符的代码），再 `npm view` 判断该版本是否已在 npm（已存在则幂等跳过）；
+3. 需要发布时执行 `npm publish --provenance --access public`；
+   `npm publish` 会触发 `prepack`（= `npm test`），因此**在目标 tag 上再跑一遍完整测试**；
+4. 用 `concurrency: npm-publish` 串行化，避免并发重复发布。
+
+### 前置配置（一次性）
+
+仓库 **Settings → Secrets and variables → Actions → New repository secret** 添加：
+
+- 名称：`NPM_TOKEN`
+- 值：npmjs.com 生成的 **Granular Access Token** —— Packages: **Read and write**、
+  Scope 限定 `dsh-ui-auth`，并**打开 "Bypass 2FA when using this token"**
+  （否则发布会被 2FA 拦下；见 0.5.2/0.6.1 发布时的实际报错）
+
+未配置该 Secret 时，需要发布的运行会**明确失败并提示**（不会静默跳过）。
+
+> 也可改用 npm **Trusted Publishing（OIDC）**：在 npmjs.com 为本仓库 + 本 workflow 配置
+> Trusted Publisher 后，删除 `Publish` 步骤的 `NODE_AUTH_TOKEN` 环境变量即可无需任何 secret
+> （workflow 已声明 `id-token: write`）。
+
+### 手动补发布
+
+```bash
+gh workflow run npm-publish.yml          # 或在 Actions 页面点 Run workflow
+gh run list --workflow=npm-publish.yml   # 查看运行结果
+```
