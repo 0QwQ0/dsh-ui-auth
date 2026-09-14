@@ -4,6 +4,7 @@
 //   - the models-page lock for non-admin users (priority -1, nav-hide rule),
 //   - button text color uses the on-primary token (readability regression guard).
 const fs = require('fs')
+const path = require('path')
 
 const registrations = []
 const mockReact = {
@@ -18,7 +19,8 @@ const window = {
   },
 }
 
-const code = fs.readFileSync('F:/aura/pluginDev/dsh-ui-auth/lib/client.js', 'utf8')
+// 路径必须相对本文件解析：CI（GitHub Actions）上没有作者本机的绝对路径。
+const code = fs.readFileSync(path.join(__dirname, '..', 'lib', 'client.js'), 'utf8')
 new Function('window', code)(window)
 
 if (registrations.length !== 1) {
