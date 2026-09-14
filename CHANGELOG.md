@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.6.2 — TypeScript 重写（行为不变）
+
+本插件改为 **TypeScript 源码 + 构建产物**：`src/*.ts` 是唯一源码，`lib/*.js` 由构建生成
+（DSH 直接消费仓库，因此产物一并提交）。这是一次**语言层面的重写**：核心流程、UI 文案、
+CSS、端点策略与错误文案都保持不变。
+
+- **目录**：`src/index.ts`（宿主：网关/认证/用户管理/审计）、`src/modern-gateway.ts`（0.1.2+ 传输适配）、
+  `src/modern-policy.ts`（端点策略表）、`src/client.ts`（设置面板客户端）。
+- **构建**：宿主用 `tsc`（ESM 多文件 → 与既有 `lib/*.js` 布局一致）；客户端用 `esbuild`
+  （`build/client.mjs`）打成 DSH 要求的**经典脚本 + `__ModuleLoader__` 工厂**形式
+  （`require('react')` 取自宿主冻结模块表），构建后自检产物形状；`charset: 'utf8'` 保证中文文案不被转义。
+- **类型**：`tsconfig.json`（宿主，`NodeNext` + `strict`）与 `tsconfig.client.json`（客户端，DOM + `strict`）。
+  DSH 服务边界用本地最小接口 + 显式 `any`，自有数据结构给出真实类型。
+- **脚本**：`build`、`typecheck`、`test`（先构建再跑全链）、`verify:clean`（校验 `lib/` 与 `src/` 同步）；
+  `prepack = npm test`，因此 npm 发布与 CI 都会从源码重新构建。
+- **devDependencies**：新增 `typescript`、`esbuild`、`@types/node`、`@types/ws`（不进运行产物；
+  `lib/*.js` 已提交，安装期不需要构建）。
+- **CI**：`typecheck` → `build` + 全链测试 → 校验 `lib/` 与 `src/` 一致；`PUPPETEER_SKIP_DOWNLOAD=true`
+  避免在 CI 下载 Chromium。
+- **保真核验**：新增 `test/port-fidelity.mjs`，对比重写前后**可观察要素的多重集**（字符串字面量、
+  数字字面量、导出名）——逐行 diff 因 tsc 重排格式而无效。结果：`index`/`gateway`/`policy` 三者的
+  字符串、数字、导出名**完全一致**；`client` 仅剩注释措辞（esbuild 剥离注释）与 `undefined`→`void 0`
+  打印器改写。两处纯结构性改写（早退守卫、局部变量）已按"核心流程不动"改回与重写前实现一致。
+- **验证**（2026-09-14）：
+
+| 验证项 | 结果 |
+|---|---|
+| `npm test`（构建 + 全链） | 安全套件 **147/147**、modern 策略 **13/13**、host-smoke **21 场景**、client-smoke、crypto/TOTP 向量 —— 全绿 |
+| 隔离 DSH `0.1.5-rc.1`：HTTP/unary（含登录门、carrier 桥接、跨用户隔离、deny-by-default） | **28/28** |
+| 隔离 DSH `0.1.5-rc.1`：`/api/remote.mux` 流（含逐帧隔离、waterfall 不投递） | **12/12** |
+| 隔离 DSH `0.1.5-rc.1`：浏览器级（设置面板「用户管理」入口与页面） | **6/6** |
+| 真实 DSH `0.1.1-rc.2` 部署：legacy 回归（dotted/`apiProxy` 路径） | **14/14** |
+| 真实 DSH `0.1.1-rc.2` 部署：浏览器级 | **5/5** |
+| `npm run store:check` | **20/20** 门禁（权限信号集合不变：files/network/credentials） |
+| 保真（宿主主体） | 手写版与新构建的 `lib/index.js` 经 esbuild 压缩后 **sha256 完全相同**（token 级一致；仅格式与类型擦除差异） |
+| 保真（客户端） | 两份 bundle 经同一 esbuild 规范化重打印后 **逐字节相同**（等价于 AST 相同） |
+
 ## 0.6.1 — 修复：DSH 0.1.2+ 上设置面板「用户管理」入口消失
 
 **现象**：0.6.0 在 DSH 0.1.5-rc.1 实例里，设置对话框能打开，但导航中没有「用户管理」，

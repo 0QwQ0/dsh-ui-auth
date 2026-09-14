@@ -197,7 +197,11 @@ DSH015_URL=http://127.0.0.1:3201 DSH015_BOOTSTRAP=<tmp>/work/dsh-ui-auth-bootstr
 | `qrcode@^1.5.4` | runtime dependency | TOTP 绑定二维码：SVG data URL（Node 端 `toString type:'svg'`，零 canvas 依赖） | MIT；纯 JS |
 | `ws@^8.21.0` | runtime dependency | 0.1.2+ 的 `/api/remote.mux` 流 mux（WebSocket 服务端）实现 | MIT；零依赖的纯 JS 实现，与 DSH 自身所用版本同线（DSH `dsh-api-gateway` 亦依赖 `ws@^8.21.0`） |
 | `@deepseek-ai/cordis@^4.0.1` | peerDependency | Cordis 宿主契约 | 官方命名空间 peer，由宿主安装体提供 |
-| `puppeteer@^25.9.0` | devDependency | 浏览器自动化冒烟/截图（仅测试） | 不进运行产物 |
+| `typescript`、`esbuild`、`@types/node`、`@types/ws` | devDependency | 0.6.2 起：从 `src/*.ts` 构建 `lib/*.js` 与类型检查 | **不进运行产物**；`lib/*.js` 作为构建产物随仓库与 npm 包分发，安装期不需要它们 |
+| `puppeteer@^25.9.0` | devDependency | 浏览器级验收（`npm run test:ui`）、截图脚本 | 不进运行产物 |
+
+审核建议：`lib/*.js` 是构建产物，审阅时以 `src/*.ts` 为准（构建命令见
+`docs/DSH-0.1.5-COMPATIBILITY.md` 第 5 节；CI 会校验 `lib/` 与 `src/` 同步）。
 
 **供应链说明**：两个运行依赖都固定于 `package-lock.json`；自动批准通道要求零运行依赖，
 故本插件不适用 `source-verified`，走 `user-reviewed` 人工审查路径。

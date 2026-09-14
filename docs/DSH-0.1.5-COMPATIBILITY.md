@@ -121,6 +121,38 @@ DSH_UI_URL=http://127.0.0.1:3201 DSH_UI_USER=admin DSH_UI_PASSWORD=<一次性口
 
 ## 5. 已知问题与修复记录
 
+### 0.6.2：TypeScript 重写（行为不变）
+
+`src/*.ts` 成为唯一源码，`lib/*.js` 改为构建产物：
+
+| 源码 | 产物 | 构建 |
+|---|---|---|
+| `src/index.ts` | `lib/index.js`（ESM） | `tsc -p tsconfig.json` |
+| `src/modern-gateway.ts` | `lib/modern-gateway.js` | 同上 |
+| `src/modern-policy.ts` | `lib/modern-policy.js` | 同上 |
+| `src/client.ts` | `lib/client.js` | `node build/client.mjs`（esbuild + `__ModuleLoader__` 工厂包装） |
+
+客户端必须用 esbuild 包装的原因：DSH 客户端模块契约是经典脚本 + 工厂形式
+（`window.__ModuleLoader__.load({ id, factory: (require) => … })`，`require('react')`
+取自宿主冻结模块表），`build/client.mjs` 复刻该包装并在构建后自检产物形状。
+
+**保真核验方法**（`node test/port-fidelity.mjs <git-ref>`）：直接逐行 diff 无意义（tsc 会重排格式），
+因此对比**可观察要素的多重集**——字符串字面量、数字字面量、导出名——因为本插件的行为载荷几乎都在
+字符串里（登录/注册/引导页 HTML、CSS 规则、错误文案、凭据键、端点名）。
+
+结论（对比 `HEAD`，即重写前的手写实现）：
+
+| 模块 | 结果 |
+|---|---|
+| `lib/index.js`（宿主主体） | 字符串/数字/导出名**完全一致**；手写版与构建版经 esbuild 压缩后 **sha256 完全相同**（token 级一致，仅格式与类型擦除差异） |
+| `lib/modern-gateway.js` | 仅注释中 `index.js` → `index.ts` 措辞差异 |
+| `lib/modern-policy.js` | 仅注释措辞差异（两处纯结构性改写已改回原实现） |
+| `lib/client.js` | 剩余差异全部来自 esbuild（剥离注释、`undefined` 打印为 `void 0`、引号规范化）；两份 bundle 经同一 esbuild 规范化重打印后**逐字节相同** |
+
+行为由现有测试链与端到端验收覆盖：`npm test`（147 + 13 + 21 场景 + 向量）、隔离 0.1.5 实例
+（HTTP **28/28**、mux **12/12**、浏览器 **6/6**）、真实 0.1.1-rc.2（legacy **14/14**、浏览器 **5/5**）、
+`store:check` **20/20**。
+
 ### 0.6.0 → 0.6.1：客户端菜单注入在 0.1.2+ 上静默失效
 
 0.6.0 在 0.1.5-rc.1 实例上登录、隔离、原生 UI 都正常，但设置面板导航里**没有「用户管理」**。

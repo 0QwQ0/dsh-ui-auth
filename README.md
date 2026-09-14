@@ -20,6 +20,33 @@
 - 两条线都保留「登录门 + 按用户隔离 + 管理面拒绝」；modern 路径额外支持
   `0.1.5` 的流式 mux 逐帧复核与 waterfall 回执不悬置。
 
+## 源码与构建（0.6.2 起为 TypeScript）
+
+`src/*.ts` 是唯一源码，`lib/*.js` 是**构建产物**（DSH 直接消费仓库，因此产物一并提交）：
+
+| 源码 | 产物 | 构建方式 |
+|---|---|---|
+| `src/index.ts`（宿主网关/认证/用户管理） | `lib/index.js`（ESM） | `tsc -p tsconfig.json` |
+| `src/modern-gateway.ts`（0.1.2+ 传输适配） | `lib/modern-gateway.js` | 同上 |
+| `src/modern-policy.ts`（端点策略表） | `lib/modern-policy.js` | 同上 |
+| `src/client.ts`（设置面板客户端） | `lib/client.js`（DSH 客户端契约） | `node build/client.mjs`（esbuild） |
+
+客户端为什么必须用 esbuild 包装：DSH 的客户端模块契约是**经典脚本 + 工厂形式** ——
+`window.__ModuleLoader__.load({ id, factory: (require) => { … return module.exports } })`，
+且 `require('react')` 取自宿主的冻结模块表（React 不是全局变量）。
+`build/client.mjs` 负责该包装并在构建后自检产物形状。
+
+```bash
+npm ci                 # 需要 devDependencies（typescript / esbuild / @types/*）
+npm run typecheck      # 宿主机 + 客户端两套 tsconfig 的严格类型检查
+npm run build          # src/*.ts → lib/*.js
+npm test               # 构建 + 全链测试（147 项安全套件 + modern 策略 + 冒烟与向量）
+npm run verify:clean   # 构建后校验 lib/ 与 src/ 同步（CI 使用）
+```
+
+> 修改源码后必须提交重新构建的 `lib/*.js`：CI 会校验 `lib/` 与 `src/` 一致，
+> 而 DSH 从仓库读取的正是 `lib/`。
+
 ## 功能
 
 - **全接口拦截**：直接包装 DSH 的 `node:http` 服务器，在路由分发之前检查会话，

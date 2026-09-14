@@ -1,0 +1,10 @@
+# 统一换行符：仓库以 LF 存储，避免 Windows 本地构建（CRLF）与 Linux CI 之间
+# `git diff --exit-code -- lib`（构建产物与 src 同步校验）出现伪差异。
+* text=auto
+src/** text eol=lf
+lib/** text eol=lf
+build/** text eol=lf
+test/** text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
