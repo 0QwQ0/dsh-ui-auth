@@ -11,7 +11,11 @@
  * 信息性（exit 0 但列出）：运行依赖与权限信号——对凭据/网络类插件属固有属性，自动
  * 批准通道按设计不可通过（需要 user-reviewed 人工审查），在此如实呈现而非隐瞒。
  *
- * 用法：node scripts/store-contract-check.mjs
+ * 用法：node test/store-contract-check.mjs
+ *
+ * 放在 `test/` 下有两个原因：它是验证工具而非运行时代码，且 STORE 的运行时扫描会
+ * 排除 `test/`——本文件为复刻门禁而包含 `exec`/`spawn`/`tool.call.toolview` 等字样，
+ * 若落在被扫描的目录里会给目录记录增添 commands / protectedDsh 权限信号。
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs'

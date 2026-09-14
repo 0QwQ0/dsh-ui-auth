@@ -12,8 +12,8 @@ manifest / README / 运行时代码，不执行第三方 install/prepare/build/t
 不用低层测试冒充运行验收。
 
 - 仓库：https://github.com/0QwQ0/dsh-ui-auth（canonical GitHub，公开）
-- 本声明对应版本：**0.5.2**（manifest `package.json` 与本次固定 Commit 一致）
-- 本机自检：`npm run store:check`（`scripts/store-contract-check.mjs`，
+- 本声明对应版本：**0.6.0**（manifest `package.json` 与本次固定 Commit 一致）
+- 本机自检：`npm run store:check`（`test/store-contract-check.mjs`，
   复刻 Catalog 固定源门禁的仓库侧可控项：20 项硬门禁全部通过）
 
 ---
@@ -24,27 +24,31 @@ manifest（`package.json`）声明如下，Catalog 自动化从该文件读取�
 
 ```jsonc
 {
-  "engines": { "node": ">=22.19.0" },          // Node.js 兼容范围
+  "engines": { "node": "^22.19.0 || >=24.0.0" }, // Node.js 兼容范围（与 DSH 一致）
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": { "platform": "web" },
     "compatibility": {
-      "dsh": ">=0.1.1-rc.2 <0.2.0",             // DSH 兼容范围（作者声明）
-      "dshReleases": { "0.1.1-rc.2": "compatible" }, // 精确逐版本声明
+      "dsh": ">=0.1.1-rc.2 <0.2.0",                       // DSH 兼容范围（作者声明）
+      "dshReleases": {                                    // 精确逐版本声明
+        "0.1.1-rc.2": "compatible",                       // 开发基线（legacy 传输）
+        "0.1.5-rc.1": "compatible"                        // 当前 npm latest（modern 传输）
+      },
       "profiles": ["web"]
     }
   }
 }
 ```
 
-- **`dshReleases` 只写我们实际跑过一次性 Profile 验证的版本**：`0.1.1-rc.2`（即
-  `dsh-v0.1.1-rc.2`，见 §2）。其余版本（`rc.7`/`rc.8`/`0.1.1-rc.1`/`0.1.2-alpha.*`）
+- **`dshReleases` 只写我们实际跑过端到端验证的版本**：`0.1.1-rc.2`（真实部署回归，见 §2）与
+  `0.1.5-rc.1`（隔离实例，见 §2.6）。其余版本（`rc.7`/`rc.8`/`0.1.1-rc.1`/`0.1.2-*`/`0.1.3-*`）
   未声明 → Catalog 写为 `unknown`，不做范围推断。
 - `dsh` 范围 `>=0.1.1-rc.2 <0.2.0` 是作者声明（面向人类展示）；按目录契约，
   范围声明**不能替代**逐版本的安装/启动/卸载/回滚证据，后者见 §2。
-- 插件只使用跨 0.1.x 稳定的公开宿主服务面（`ctx.webServer`、`ctx.apiProxy` events、
-  `ctx.credentials`、`ctx.settings`/registry 与 fs），不触碰 `@deepseek-ai/*` 内部；
-  上界 `<0.2.0` 是因为 DSH 0.2.0 的插件宿主契约会演进，需重新验证后再声明。
+- 传输适配按能力探测（`connection.authorizeIndex`）自动选择：0.1.1-rc.2 走 dotted/`apiProxy` 旧路径，
+  0.1.2 起走 slash Remote + `/api/remote.mux`；两版都只使用公开宿主服务面
+  （`ctx.webServer`、`ctx.connection`、`ctx.typertGateway`、`ctx.credentials`、`ctx.fs`、settings/registry），
+  不触碰 `@deepseek-ai/*` 内部；上界 `<0.2.0` 是因为 DSH 0.2.0 的插件宿主契约会演进，需重新验证后再声明。
 
 ## 2. 一次性 Profile 安装 / 启动 / 卸载证据
 
@@ -141,13 +145,56 @@ dsh plugin --profile web remove dsh-ui-auth
 > install/start/uninstall + 端到端登录；未覆盖其它 DSH 版本、未做独立安全审计）。
 > 复现方法如上（步骤可逐条重跑），口令为一次性随机值，不在此保留。
 
+### 2.6 隔离 DSH 0.1.5-rc.1 实例验收（模块 2：modern 传输）
+
+0.6.0 起，在一次性环境里对当前 npm `latest` 复现同一套验收（官方 npm 包，不构建 monorepo）：
+
+```text
+npm install --prefix <tmp>/cli @deepseek-ai/dsh@0.1.5-rc.1     # 官方 CLI（0.1.5-rc.1）
+DSH_HOME=<tmp>/home dsh plugin --profile web add <本仓库>       # profile web = base + web-app + dsh-ui-auth
+cd <tmp>/work && DSH_HOME=<tmp>/home dsh web --port 3201 --no-open   # 冷启动（cwd 即插件状态根）
+DSH015_URL=http://127.0.0.1:3201 DSH015_BOOTSTRAP=<tmp>/work/dsh-ui-auth-bootstrap.txt \
+  node test/live-015-check.mjs
+```
+
+实测结果（2026-09-14）：**28/28 通过**。
+
+| 检查 | 结果 |
+|---|---|
+| `GET /`（未登录） | `302 → /auth/login`（登录门生效） |
+| `GET /auth/login` | `200` 登录页 |
+| 未认证 `POST /api/session/list` | `401` |
+| admin 登录 | `200` + `dsh_auth` cookie |
+| **登录后 `GET /`** | `200` 原生 DSH UI（**carrier 桥接成功**：浏览器未持有原生 cookie/启动令牌） |
+| admin `POST /api/session/list` | `200`（slash Remote 经插件网关可用） |
+| admin `settings/describe` | `200` |
+| admin `workspace/create` + `session/create` | `200`，会话归属先落盘再返回 |
+| 普通用户 `session/list` | `200` 且 **看不到 admin 的会话**（items=0 vs admin items=1） |
+| 普通用户读他人 `session/page` | `403` |
+| 普通用户在他人 workspace 建会话 / 带 `cwd` 覆盖 | `403` / `403` |
+| 普通用户 `settings/update`、`credentials/describe`、`workspace/create`、`commands/execute`、`dynamicCordisRunner/inventory`、`pluginInventory/list`、`directoryPicker/list`、`session/openWorkspacePath`、`subagents/list` | 逐条 `403`（deny-by-default） |
+| 普通用户未审查端点 `future/endpoint` | `403` |
+| 登出后同 cookie 再请求 | `401`（会话吊销生效） |
+
+同期还做了 **0.1.1-rc.2 真实部署回归**（`node test/live-legacy-check.mjs`）：**14/14 通过**——
+登录门、dotted `/api/session.list` 仍可用、普通用户 LLM/凭据管理面 403、会话导出属主检查 403、登出吊销生效。
+
+> 两个模块的证据级别同为 **partial**：覆盖的是"一次性/隔离环境 + 指定版本 + 端到端 HTTP 验收"，
+> 不构成完整浏览器交互验收，也不是独立安全审计。modern 路径的有意收紧项（普通用户不可创建
+> workspace、不可写任何设置命名空间、不可用 commands/execute 与 workspaceFiles 之外的宿主能力）
+> 见 `docs/DSH-0.1.5-COMPATIBILITY.md`。
+
 ## 3. 依赖声明（Dependencies）
 
 | 包 | 类型 | 用途 | 说明 |
 |---|---|---|---|
-| `qrcode@^1.5.4` | runtime dependency（唯一） | TOTP 绑定二维码：SVG data URL（Node 端 `toString type:'svg'`，零 canvas 依赖） | MIT；纯 JS；**供应链说明**：固定于 `package-lock.json`，属"需单独供应链审查"项——自动批准通道要求零运行依赖，故本插件不适用 `source-verified`，走 `user-reviewed` 人工审查路径 |
+| `qrcode@^1.5.4` | runtime dependency | TOTP 绑定二维码：SVG data URL（Node 端 `toString type:'svg'`，零 canvas 依赖） | MIT；纯 JS |
+| `ws@^8.21.0` | runtime dependency | 0.1.2+ 的 `/api/remote.mux` 流 mux（WebSocket 服务端）实现 | MIT；零依赖的纯 JS 实现，与 DSH 自身所用版本同线（DSH `dsh-api-gateway` 亦依赖 `ws@^8.21.0`） |
 | `@deepseek-ai/cordis@^4.0.1` | peerDependency | Cordis 宿主契约 | 官方命名空间 peer，由宿主安装体提供 |
 | `puppeteer@^25.9.0` | devDependency | 浏览器自动化冒烟/截图（仅测试） | 不进运行产物 |
+
+**供应链说明**：两个运行依赖都固定于 `package-lock.json`；自动批准通道要求零运行依赖，
+故本插件不适用 `source-verified`，走 `user-reviewed` 人工审查路径。
 
 无 `bundledDependencies`、无 install/prepare 等生命周期脚本、无 git submodule、
 无符号链接、无原生/可执行制品（`.node/.exe/.dll/.so` 等）。
@@ -160,7 +207,7 @@ dsh plugin --profile web remove dsh-ui-auth
 | 维度 | 声明 | 依据 |
 |---|---|---|
 | files | `write`（范围明确：插件私有状态） | `dsh-ui-auth-sessions.json`（会话 SHA-256 哈希）、`dsh-ui-auth-audit.jsonl`、`dsh-ui-auth-bootstrap.txt`（首次启动，改密后自毁）经 DSH `fs` 服务写入进程工作目录；不读任意用户路径 |
-| network | `specified-services`（仅宿主自身服务器） | 网关包装 DSH Web UI 自己的 HTTP 请求/WS upgrade 监听器并消费 `apiProxy` 事件流；**无任何出站连接**（无 fetch/WebSocket 主动外联、无遥测端点）；浏览器端仅同源 |
+| network | `specified-services`（仅宿主自身服务器） | 网关包装 DSH Web UI 自己的 HTTP 请求/WS upgrade 监听器：0.1.1-rc.2 上消费 `apiProxy` 事件流；0.1.2+ 上服务 `/api/remote.mux` 流 mux 并在**进程内**向宿主 `connection` 换取 carrier cookie（`createSharedFetchHandler('/api').fetch(...)` 仅用于事件回执，目标始终是 `http://dsh.internal` 本进程）。**无任何公网出站连接**（无第三方端点、无遥测）；浏览器端仅同源 |
 | commands | `none` | 运行时代码无 `child_process`/`exec`/`spawn`/shell |
 | credentials | `read/write`（自有 realm `dsh-ui-auth/*`，经 DSH `credentials` 服务） | 用户账号/邀请码/2FA 元数据存于 `~/.dsh/.credentials.yaml` 的 `dsh-ui-auth/*` 域；**不存明文口令**（口令仅校验后丢弃或存密码哈希），会话 token 落盘为 SHA-256 |
 | 汇总等级 | **high** | 触及凭据类敏感持久状态，且承担登录/会话/用户生命周期管理；按目录"权限等级"定义应标 `high`，不因"代码中暂未搜到"降级 |
