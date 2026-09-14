@@ -178,14 +178,17 @@ DSH015_URL=http://127.0.0.1:3201 DSH015_BOOTSTRAP=<tmp>/work/dsh-ui-auth-bootstr
 | 普通用户未审查端点 `future/endpoint` | `403` |
 | 登出后同 cookie 再请求 | `401`（会话吊销生效） |
 | **mux 流**：未认证升级 / admin `$events` ready / `session/control` baseline / 普通用户 `workspace/follow` baseline 裁剪 / 自有 `api-session/added` 仅投给 admin（逐帧隔离）/ 普通用户不收到 waterfall | 12/12（见 `test/live-015-mux.mjs`） |
+| **浏览器级验收**：设置导航含「用户管理」、该页渲染（我的账号/修改密码/两步验证）、管理员额外项、无插件级错误 | 隔离实例 **6/6**、真实 0.1.1-rc.2 面板 **5/5**（见 `test/live-ui-check.mjs`） |
 
 同期还做了 **0.1.1-rc.2 真实部署回归**（`node test/live-legacy-check.mjs`）：**14/14 通过**——
 登录门、dotted `/api/session.list` 仍可用、普通用户 LLM/凭据管理面 403、会话导出属主检查 403、登出吊销生效。
 
-> 两个模块的证据级别同为 **partial**：覆盖的是"一次性/隔离环境 + 指定版本 + 端到端 HTTP 验收"，
-> 不构成完整浏览器交互验收，也不是独立安全审计。modern 路径的有意收紧项（普通用户不可创建
+> 证据级别 **partial**：覆盖"一次性/隔离环境 + 指定版本 + HTTP 与浏览器端到端验收"，
+> 仍不构成完整交互验收或独立安全审计。浏览器级检查是在 0.6.1 补充的——0.6.0 的
+> "客户端菜单静默失效"回归只有真实浏览器能暴露（根因与修复见
+> `docs/DSH-0.1.5-COMPATIBILITY.md` 第 5 节）。modern 路径的有意收紧项（普通用户不可创建
 > workspace、不可写任何设置命名空间、不可用 commands/execute 与 workspaceFiles 之外的宿主能力）
-> 见 `docs/DSH-0.1.5-COMPATIBILITY.md`。
+> 见同文档第 2 节。
 
 ## 3. 依赖声明（Dependencies）
 

@@ -97,6 +97,9 @@ DSH015_URL=http://127.0.0.1:3201 DSH015_BOOTSTRAP=<tmp>/work/dsh-ui-auth-bootstr
 
 # 开发基线 0.1.1-rc.2 回归（真实部署）
 DSH_LEGACY_URL=http://127.0.0.1:3080 node test/live-legacy-check.mjs
+
+# 浏览器级验收（设置面板「用户管理」入口与页面渲染）
+DSH_UI_URL=http://127.0.0.1:3201 DSH_UI_USER=admin DSH_UI_PASSWORD=<一次性口令> node test/live-ui-check.mjs
 ```
 
 实测结果（2026-09-14）：
@@ -110,10 +113,32 @@ DSH_LEGACY_URL=http://127.0.0.1:3080 node test/live-legacy-check.mjs
   admin `$events` 首帧 `ready{clientId}`、`session/control` 首帧 baseline、
   普通用户 `workspace/follow` baseline 已裁剪为空、admin 收到自有会话 `api-session/added` 而
   **普通用户同刻未收到该帧**（逐帧隔离）、普通用户未收到任何 waterfall
+- **浏览器级验收**：设置导航 `[通用设置 | 模型 | 插件 | Agent 预设 | 用户管理]`，
+  「用户管理」页渲染出「我的账号 / 修改密码 / 两步验证」，管理员额外看到「创建用户 / 邀请码管理」，
+  无插件级错误——隔离实例 **6/6**、真实 0.1.1-rc.2 面板 **5/5**
 - 0.1.1-rc.2 真实部署：**14/14** 通过——dotted Remote 仍可用、普通用户 LLM/凭据管理面 403、
   会话导出属主检查 403、登出吊销生效
 
-## 5. 上游草稿的复用与差异
+## 5. 已知问题与修复记录
+
+### 0.6.0 → 0.6.1：客户端菜单注入在 0.1.2+ 上静默失效
+
+0.6.0 在 0.1.5-rc.1 实例上登录、隔离、原生 UI 都正常，但设置面板导航里**没有「用户管理」**。
+
+根因：`slots` 服务的提供方在 0.1.5 从 `@deepseek-ai/dsh-client-runtime` 变为
+`@deepseek-ai/dsh-client-ui-renderer`，且客户端模块到达顺序在该版本变成显式依赖
+（`dsh.client.inject` 由信息性元数据变为工厂到达屏障）。本插件客户端行未声明依赖
+（boot 图中该行为 `{"id":"dsh-ui-auth","url":...}`，无 `inject` 字段），可能在服务就绪前
+`apply`；旧实现在 `ctx.get('slots') === undefined` 时**静默 return**，于是设置项从未注册。
+HTTP/RPC 级验收完全看不到该故障，只有真实浏览器能暴露。
+
+修复（0.6.1）：客户端插件显式声明 `exports.inject = ['slots']`，并保留有界重试与**失败时明确报错**；
+新增浏览器级验收 `test/live-ui-check.mjs` 覆盖该回归。纪律：**客户端注册类改动必须用真实浏览器验收**。
+
+另注（非缺陷）：登录后浏览器仍会对 `/manifest.webmanifest` 发一个不带 cookie 的请求并被门拒绝（401），
+这是 PWA manifest 的取用方式所致，不影响功能；0.1.1-rc.2 上行为相同。
+
+## 6. 上游草稿的复用与差异
 
 本版本的 modern 路径**复用了上游 PR #1 的设计与代码骨架**
 （`lib/modern-gateway.js` 的 carrier 桥接、mux 处理、correlation 与 waterfall 释放；`lib/modern-policy.js` 的
