@@ -32,7 +32,9 @@
   `dsh.compatibility.dshReleases` 增补 `0.1.5-rc.1: compatible`。
 - **测试与文档**：新增 `docs/DSH-0.1.5-COMPATIBILITY.md`（端点清单、收紧项、`uiAuth` 接口、实测证据）；
   `test/modern-policy.test.mjs` 扩到 13 项；新增端到端验收脚本
-  `test/live-015-check.mjs`（隔离 0.1.5 实例 28/28）与 `test/live-legacy-check.mjs`（0.1.1-rc.2 回归 14/14）。
+  `test/live-015-check.mjs`（隔离 0.1.5 实例 HTTP/unary 28/28）、
+  `test/live-015-mux.mjs`（同实例 mux 流式 12/12，含逐帧隔离与 waterfall 不投递）与
+  `test/live-legacy-check.mjs`（0.1.1-rc.2 回归 14/14）。
 - **上游草稿复用**：modern 路径复用 StormSeven1 的 PR #1 骨架（carrier 桥接、mux 处理、correlation、
   waterfall 释放、`uiAuth` 接口与策略回归用例），并按 0.1.5 重建端点/事件表、补上其未覆盖的
   gzip 投影与绕过 Remote 的 `/api` 路由；其 0.1.2 专属集成测试与文档已由 0.1.5 版本取代。

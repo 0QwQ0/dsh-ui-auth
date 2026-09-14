@@ -155,9 +155,11 @@ DSH_HOME=<tmp>/home dsh plugin --profile web add <本仓库>       # profile web
 cd <tmp>/work && DSH_HOME=<tmp>/home dsh web --port 3201 --no-open   # 冷启动（cwd 即插件状态根）
 DSH015_URL=http://127.0.0.1:3201 DSH015_BOOTSTRAP=<tmp>/work/dsh-ui-auth-bootstrap.txt \
   node test/live-015-check.mjs
+DSH015_URL=http://127.0.0.1:3201 DSH015_BOOTSTRAP=<tmp>/work/dsh-ui-auth-bootstrap.txt \
+  node test/live-015-mux.mjs
 ```
 
-实测结果（2026-09-14）：**28/28 通过**。
+实测结果（2026-09-14）：**HTTP/unary 28/28 + mux 流 12/12 通过**。
 
 | 检查 | 结果 |
 |---|---|
@@ -175,6 +177,7 @@ DSH015_URL=http://127.0.0.1:3201 DSH015_BOOTSTRAP=<tmp>/work/dsh-ui-auth-bootstr
 | 普通用户 `settings/update`、`credentials/describe`、`workspace/create`、`commands/execute`、`dynamicCordisRunner/inventory`、`pluginInventory/list`、`directoryPicker/list`、`session/openWorkspacePath`、`subagents/list` | 逐条 `403`（deny-by-default） |
 | 普通用户未审查端点 `future/endpoint` | `403` |
 | 登出后同 cookie 再请求 | `401`（会话吊销生效） |
+| **mux 流**：未认证升级 / admin `$events` ready / `session/control` baseline / 普通用户 `workspace/follow` baseline 裁剪 / 自有 `api-session/added` 仅投给 admin（逐帧隔离）/ 普通用户不收到 waterfall | 12/12（见 `test/live-015-mux.mjs`） |
 
 同期还做了 **0.1.1-rc.2 真实部署回归**（`node test/live-legacy-check.mjs`）：**14/14 通过**——
 登录门、dotted `/api/session.list` 仍可用、普通用户 LLM/凭据管理面 403、会话导出属主检查 403、登出吊销生效。

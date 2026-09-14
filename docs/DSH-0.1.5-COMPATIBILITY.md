@@ -93,6 +93,7 @@ DSH_HOME=<tmp>/home dsh plugin --profile web add <本仓库路径>
 DSH_HOME=<tmp>/home dsh web --port 3201 --no-open
 #   3) 端到端验收
 DSH015_URL=http://127.0.0.1:3201 DSH015_BOOTSTRAP=<tmp>/work/dsh-ui-auth-bootstrap.txt node test/live-015-check.mjs
+DSH015_URL=http://127.0.0.1:3201 DSH015_BOOTSTRAP=<tmp>/work/dsh-ui-auth-bootstrap.txt node test/live-015-mux.mjs
 
 # 开发基线 0.1.1-rc.2 回归（真实部署）
 DSH_LEGACY_URL=http://127.0.0.1:3080 node test/live-legacy-check.mjs
@@ -101,9 +102,14 @@ DSH_LEGACY_URL=http://127.0.0.1:3080 node test/live-legacy-check.mjs
 实测结果（2026-09-14）：
 
 - `npm test`：**147/147 + modern 策略 13/13** 通过
-- 隔离 0.1.5-rc.1 实例：**28/28** 通过——登录门 302、未认证 API 401、登录后原生 UI 200（carrier 桥接成功）、
-  slash Remote 可用、创建会话归属落盘、普通用户看不到他人会话、跨用户 `session/page` 403、
-  他人 workspace 建会话 403、`cwd` 覆盖 403、9 项管理面逐条 403、未知端点 403、登出后 401
+- 隔离 0.1.5-rc.1 实例：**28/28**（HTTP/unary Remote）通过——登录门 302、未认证 API 401、
+  登录后原生 UI 200（carrier 桥接成功）、slash Remote 可用、创建会话归属落盘、
+  普通用户看不到他人会话、跨用户 `session/page` 403、他人 workspace 建会话 403、`cwd` 覆盖 403、
+  9 项管理面逐条 403、未知端点 403、登出后 401
+- 同一实例的 **mux 流式验收 12/12** 通过——未认证升级被拒（socket 被销毁，未建立 101）、
+  admin `$events` 首帧 `ready{clientId}`、`session/control` 首帧 baseline、
+  普通用户 `workspace/follow` baseline 已裁剪为空、admin 收到自有会话 `api-session/added` 而
+  **普通用户同刻未收到该帧**（逐帧隔离）、普通用户未收到任何 waterfall
 - 0.1.1-rc.2 真实部署：**14/14** 通过——dotted Remote 仍可用、普通用户 LLM/凭据管理面 403、
   会话导出属主检查 403、登出吊销生效
 
