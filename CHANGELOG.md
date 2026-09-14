@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.6.0 — DSH 0.1.5 适配（双线：保留 0.1.1-rc.2，新增 0.1.2+ 现代传输）
+
+同一份代码按能力探测自动选择传输：`ctx.get('connection')?.authorizeIndex` 存在走 **modern**，
+否则走 **legacy**。0.1.1-rc.2 的历史行为完全保留。
+
+- **modern 传输适配（slash Remote + `/api/remote.mux`）**：按 DSH `0.1.5-rc.1` 的真实端点表
+  （`packages/api/*` 的 `@Remote` 描述符）重建授权与投影，取代对 dotted 方法名的依赖——
+  否则 slash 端点会命中旧的"默认放行"分支，导致**登录门仍在但按用户隔离静默失效**。
+- **原生 carrier 桥接**：0.1.2 起浏览器必须持有 `dsh-auth-<hash>` 签名 cookie（由启动令牌换取），
+  插件登录本身不足以让 UI 可用。now 由插件在进程内代换该 cookie 并注入转发请求，
+  **浏览器既不持有原生 cookie，也不持有进程启动令牌**；每请求仍复核 `connection.requestRejection`。
+- **deny-by-default 策略面**：普通用户仅可访问自有 session/workspace/文件范围/agent 范围与共享只读元数据；
+  `settings/*` 写、`credentials/*`、`workspace/create`、`directoryPicker/*`、`commands/execute`、
+  `subagents/*`、`agentPresets/*`、`llm/discoverModels`、`pluginInventory/list`、
+  `dynamicCordisRunner/*`、`session/openWorkspacePath` 与未知端点一律 403。
+- **绕过 Remote 的 `/api` 精确路由**：`/api/session.export` 与 `/api/session/uploadFileBinary`
+  按 `sessionId` 属主放行；`/api/file`、`/api/present.*`、`/open-in-app/*` 仅管理员。
+- **流式隔离**：mux 每次投递前复核登录态与属主；`session/control`、`workspace/follow` 的
+  baseline/增量帧按键裁剪；被过滤的 `waterfall` 由插件代答 `$events/result {kind:'next'}` 防止 owner 悬置；
+  `$events/result` 仅接受与本登录+本连接+已投递事件匹配的回执；登出/改权 1 秒内关闭长连接。
+- **修复投影路径的压缩响应**：需要改写响应体的请求强制上游 `accept-encoding: identity`，
+  写回时清除继承的 `content-encoding`/`transfer-encoding`/`content-length`（否则浏览器解压失败）。
+- **凭据记录键合规**：不合 `^[a-z][a-z0-9-]*$` 的用户名改用 `user-<sha256>` 记录键，并持久化
+  退役用户名防止复用；小写用户名保持原键（无迁移影响）。该语法约束在 0.1.1-rc.2 即存在，
+  旧的写路径会让整库在重启时加载失败（fail-closed）。
+- **去 `timer` 依赖**：改用 `setInterval` + `ctx.effect` 清理；`inject` 改为 `['webServer','connection']`
+  （两版 Host 均提供 `connection` 服务）。注：经核实 `timer` 在 0.1.2/0.1.5 的 base bundle 中**仍存在**，
+  去掉它是可移植性改进而非激活阻断。
+- **依赖/清单**：新增运行时依赖 `ws@^8.21.0`；`engines.node` 对齐 DSH 的 `^22.19.0 || >=24.0.0`；
+  `dsh.compatibility.dshReleases` 增补 `0.1.5-rc.1: compatible`。
+- **测试与文档**：新增 `docs/DSH-0.1.5-COMPATIBILITY.md`（端点清单、收紧项、`uiAuth` 接口、实测证据）；
+  `test/modern-policy.test.mjs` 扩到 13 项；新增端到端验收脚本
+  `test/live-015-check.mjs`（隔离 0.1.5 实例 HTTP/unary 28/28）、
+  `test/live-015-mux.mjs`（同实例 mux 流式 12/12，含逐帧隔离与 waterfall 不投递）与
+  `test/live-legacy-check.mjs`（0.1.1-rc.2 回归 14/14）。
+- **上游草稿复用**：modern 路径复用 StormSeven1 的 PR #1 骨架（carrier 桥接、mux 处理、correlation、
+  waterfall 释放、`uiAuth` 接口与策略回归用例），并按 0.1.5 重建端点/事件表、补上其未覆盖的
+  gzip 投影与绕过 Remote 的 `/api` 路由；其 0.1.2 专属集成测试与文档已由 0.1.5 版本取代。
+
 ## 0.5.2 — DSH STORE 上架整改（catalog-blocked 修复）
 
 回应 DSH STORE 自动检查（issue #327，`catalog-blocked`），全部为声明/文档/证据类
@@ -19,7 +58,7 @@
   权限表（files=私有状态 write / network=仅宿主自身服务器、无出站 / commands=none /
   credentials=自有 realm 经 DSH credentials 服务、无明文口令 → 汇总 high）、
   无外部服务、失败边界清单。
-- **自检脚本**：新增 `scripts/store-contract-check.mjs`（`npm run store:check`）复刻
+- **自检脚本**：新增 `test/store-contract-check.mjs`（`npm run store:check`）复刻
   Catalog 固定源门禁的仓库侧可控项（20 项硬门禁），权限信号仅来自 `lib/` 运行时代码。
 - **README 纠偏**：修正 0.5.1 加固后过时表述（会话落盘已为 SHA-256 哈希、Secure
   Cookie 动态启用、会话持久化），并新增「DSH STORE 上架声明」小节。

@@ -1,6 +1,6 @@
 {
   "name": "dsh-ui-auth",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "DSH Web UI 认证网关：登录保护全部 HTTP/WS 接口；用户管理、邀请码注册与 TOTP 两步验证。",
   "type": "module",
   "main": "./lib/index.js",
@@ -18,9 +18,11 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "test": "node --check lib/index.js && node --check lib/client.js && node test/crypto-vectors.cjs && node test/totp-vectors.mjs && node test/client-smoke.cjs && node test/host-smoke.mjs && node test/security-suite.mjs",
-    "prepack": "node --check lib/index.js && node --check lib/client.js && node test/crypto-vectors.cjs && node test/totp-vectors.mjs && node test/client-smoke.cjs && node test/host-smoke.mjs && node test/security-suite.mjs",
-    "store:check": "node scripts/store-contract-check.mjs"
+    "test": "node --check lib/index.js && node --check lib/client.js && node --check lib/modern-gateway.js && node --check lib/modern-policy.js && node test/crypto-vectors.cjs && node test/totp-vectors.mjs && node test/client-smoke.cjs && node test/host-smoke.mjs && node test/security-suite.mjs && node test/modern-policy.test.mjs",
+    "prepack": "npm test",
+    "store:check": "node test/store-contract-check.mjs",
+    "test:compat:0.1.5": "node test/live-015-check.mjs",
+    "test:compat:0.1.1": "node test/live-legacy-check.mjs"
   },
   "dsh": {
     "bundle": {
@@ -32,7 +34,8 @@
     "compatibility": {
       "dsh": ">=0.1.1-rc.2 <0.2.0",
       "dshReleases": {
-        "0.1.1-rc.2": "compatible"
+        "0.1.1-rc.2": "compatible",
+        "0.1.5-rc.1": "compatible"
       },
       "profiles": [
         "web"
@@ -43,10 +46,11 @@
     "@deepseek-ai/cordis": "^4.0.1"
   },
   "dependencies": {
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "ws": "^8.21.0"
   },
   "engines": {
-    "node": ">=22.19.0"
+    "node": "^22.19.0 || >=24.0.0"
   },
   "keywords": [
     "deepseek-harness",

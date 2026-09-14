@@ -5,6 +5,21 @@
 在 DSH Web UI 前套一层用户名/密码登录校验，未登录用户无法访问任何页面、API
 或 WebSocket 通道。
 
+## DSH 版本支持（0.6.0 起双线）
+
+同一份代码按能力探测自动选择传输适配，无需配置：
+
+| Host 版本 | 走的路径 | 说明 |
+|---|---|---|
+| `0.1.1-rc.2`（开发基线） | **legacy** | dotted `/api/<a>.<b>` + `apiProxy` 事件流，历史行为不变 |
+| `0.1.2-rc.1` … `0.1.5-rc.1`（当前 `latest`） | **modern** | slash Remote `/api/<ns>/<method>` + `/api/remote.mux` 流 mux + 原生浏览器 cookie 门（插件内部代换 carrier cookie），普通用户按端点 deny-by-default |
+
+- 判定条件：`ctx.get('connection')?.authorizeIndex` 是否存在。
+- modern 路径的完整端点清单、有意收紧项、下游 `uiAuth` 接口与实测证据见
+  [docs/DSH-0.1.5-COMPATIBILITY.md](docs/DSH-0.1.5-COMPATIBILITY.md)。
+- 两条线都保留「登录门 + 按用户隔离 + 管理面拒绝」；modern 路径额外支持
+  `0.1.5` 的流式 mux 逐帧复核与 waterfall 回执不悬置。
+
 ## 功能
 
 - **全接口拦截**：直接包装 DSH 的 `node:http` 服务器，在路由分发之前检查会话，
@@ -113,8 +128,9 @@ dsh plugin --profile web add "link:F:/aura/pluginDev/dsh-ui-auth"
 dsh plugin --profile web add dsh-ui-auth
 ```
 
-运行时依赖：`qrcode`（生成 TOTP 绑定二维码，纯 JS 无原生依赖；`dsh plugin add`
-会自动安装；本地 link 安装后如提示缺少依赖，在插件目录执行一次 `npm install`）。
+运行时依赖：`qrcode`（生成 TOTP 绑定二维码）与 `ws`（0.1.2+ 的 `/api/remote.mux` 流 mux 客户端实现），
+两者都是纯 JS、无必需原生依赖；`dsh plugin add` 会自动安装；本地 link 安装后如提示缺少依赖，
+在插件目录执行一次 `npm install`（`ws` 通常也可经 DSH 自身的安装体回退解析）。
 
 bundle 层在**启动时**应用（挂载 Host 网关 + 发现客户端模块），因此首次安装需
 重启一次面板生效。
