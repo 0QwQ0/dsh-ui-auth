@@ -69,8 +69,12 @@ Chrome 会抛 `SecurityError: 127.0.0.1 is an invalid domain`（实测 Chrome 15
 | 登录页/端点联通（离线，含内联脚本语法解析） | **18/18**：`#pk` 入口、脚本可解析、IP 字面量 409 + `localhost` 提示、伪造断言不下发会话 |
 | 地址可用性实测（`test/webauthn-probe.mjs`） | `localhost` 全通；`127.0.0.1` 被 Blink 拒绝（`invalid domain`），已据此提前拦截 |
 | 隔离 DSH `0.1.5-rc.1`：浏览器级设置面板 | **8/8**（含通行密钥卡片与按地址给出的状态提示） |
-| 真实 DSH `0.1.1-rc.2` 部署：legacy 回归 + 浏览器级 | 见「0.6.4 兼容性复核」一节（docs/DSH-0.1.5-COMPATIBILITY.md） |
+| 隔离 DSH `0.1.5-rc.1`：HTTP/unary 与授权面 / `remote.mux` 逐帧隔离 | **28/28** / **12/12** |
+| 真实 DSH `0.1.1-rc.2` 部署：legacy 回归（dotted RPC / `apiProxy` / 授权面） | **14/14** |
+| 真实 DSH `0.1.1-rc.2` 部署：浏览器级设置面板（`127.0.0.1` 源 / `localhost` 源） | **7/7** / **7/7**（前者显示 localhost 提示，后者显示添加入口） |
+| 线上构建确认 | 真实面板重启后 `/auth/passkey/login/options` → **409 + `ip-literal`**（旧构建为 404） |
 | `npm run store:check` | **20/20** 门禁（权限信号集合仍为 files/network/credentials） |
+| `npm run verify:clean` | 通过（`lib/` 与 `src/` 一致） |
 
 ## 0.6.2 — TypeScript 重写（行为不变）
 
