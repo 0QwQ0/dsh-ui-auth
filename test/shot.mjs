@@ -57,6 +57,61 @@ const rpcInPage = (method, body) => page.evaluate((m, b) => fetch(`/auth/rpc/${m
   method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b || {}),
 }).then((response) => response.json()), method, body)
 
+// 登录后宿主/插件可能会弹出提醒或引导层；它们会盖住要截图的目标，必须真正清掉再拍。
+// 注意：不能按“关闭”这类通用文案乱点——设置对话框自己的关闭按钮也叫「关闭」。
+const OVERLAY_TEXTS = ['继续', '我明白了', '知道了', '我知道了', '开始使用', '稍后再说', '跳过', '好的']
+async function dismissOverlays() {
+  for (let round = 0; round < 4; round++) {
+    const closed = await page.evaluate((texts) => {
+      const done = []
+      // 1) 我们自己的登录提醒弹窗：会话标记 + 直接移除，双保险
+      try { sessionStorage.setItem('dshua-totp-reminded', '1') } catch (error) { /* ignore */ }
+      const own = document.getElementById('dshua-totp-reminder')
+      if (own !== null) { own.remove(); done.push('dshua-totp-reminder') }
+      // 2) 覆盖整屏的遮罩层（排除设置对话框本体）里的按钮
+      const settingsDialog = document.querySelector('[role=dialog]')
+      const overlays = [...document.querySelectorAll('div')].filter((element) => {
+        const style = getComputedStyle(element)
+        if (style.position !== 'fixed') return false
+        if (element === settingsDialog || (settingsDialog !== null && settingsDialog.contains(element))) return false
+        const rect = element.getBoundingClientRect()
+        return rect.width >= innerWidth * 0.8 && rect.height >= innerHeight * 0.8
+      })
+      for (const overlay of overlays) {
+        const button = [...overlay.querySelectorAll('button,[role=button]')].find((candidate) =>
+          texts.includes((candidate.textContent || '').trim()) || texts.includes((candidate.getAttribute('aria-label') || '').trim()))
+        if (button === undefined) continue
+        button.click()
+        done.push((button.textContent || button.getAttribute('aria-label') || '').trim())
+        break
+      }
+      return done
+    }, OVERLAY_TEXTS)
+    if (closed.length === 0) return
+    console.log('  关闭覆盖层:', closed.join(', '))
+    await wait(700)
+  }
+}
+
+/** 截前状态：自家提醒弹窗是否已关闭、是否还有可见的全屏弹窗（会盖住目标）。 */
+async function overlayState() {
+  return page.evaluate(() => {
+    const buttonTexts = /继续|稍后再说|知道了|我知道了|开始使用|跳过|好的/
+    const visiblePopups = [...document.querySelectorAll('div')].filter((element) => {
+      const style = getComputedStyle(element)
+      if (style.position !== 'fixed' && style.position !== 'absolute') return false
+      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) < 0.05) return false
+      const rect = element.getBoundingClientRect()
+      if (rect.width < window.innerWidth * 0.8 || rect.height < window.innerHeight * 0.8) return false
+      return buttonTexts.test(element.textContent || '')
+    }).length
+    return {
+      ownReminder: document.getElementById('dshua-totp-reminder') !== null,
+      visiblePopups,
+    }
+  })
+}
+
 try {
   // 1) 登录页：可用来源下应出现通行密钥入口
   await page.goto(`${base}/auth/login`, { waitUntil: 'domcontentloaded' })
@@ -77,6 +132,8 @@ try {
   await page.type('#p', password)
   await page.click('#b')
   await wait(3000)
+  // 登录后先清掉可能弹出的提醒层，否则它会盖住要截图的设置页（这正是上一版截图出错的原因）
+  await dismissOverlays()
 
   // 4) 注册成功引导页（第二个因子二选一：TOTP 或通行密钥）
   await page.goto(`${base}/auth/register/success`, { waitUntil: 'domcontentloaded' })
@@ -84,6 +141,7 @@ try {
   await shot(page, 'screenshot-guide.png')
   await page.goto(`${base}/`, { waitUntil: 'domcontentloaded' })
   await wait(2000)
+  await dismissOverlays()
 
   if (demoUsers) {
     const existing = new Set((await rpcInPage('listUsers')).users?.map((user) => user.username) ?? [])
@@ -114,8 +172,10 @@ try {
     if (trigger) trigger.click()
   })
   await wait(1500)
+  await dismissOverlays()
   await clickNav('用户管理')
   await wait(1800)
+  await dismissOverlays()
 
   const root = await page.$('.dshua')
   if (root === null) throw new Error('未找到「用户管理」页容器（.dshua）')
@@ -125,16 +185,30 @@ try {
     rows: [...table.querySelectorAll('tbody tr')].map((tr) => (tr.firstElementChild?.textContent || '').trim()),
   })))
   for (const table of tableInfo) console.log(`表格 [${table.head}] ${table.rows.length} 行：${table.rows.join(', ') || '（空）'}`)
+
+  // 截前先确认提醒/引导弹窗确实已关闭（这正是上一版截到弹窗的原因），再拍。
+  await dismissOverlays()
+  await root.scrollIntoView()
+  await wait(400)
+  const usersState = await overlayState()
+  console.log(`用户管理页截前状态：自家提醒弹窗=${usersState.ownReminder ? '仍存在（异常）' : '已关闭'}，其它可见弹窗=${usersState.visiblePopups}`)
   await shot(root, 'screenshot-users.png')
 
   // 4) 通行密钥卡片（未绑定状态：显示两个添加入口）
+  await dismissOverlays()
   const card = await page.evaluateHandle(() => {
     const cards = [...document.querySelectorAll('.dshua .card')]
     return cards.find((element) => (element.textContent || '').includes('通行密钥（Passkey）')) ?? null
   })
   const element = card.asElement()
   if (element === null) console.log('未找到通行密钥卡片，跳过 screenshot-passkey.png')
-  else await shot(element, 'screenshot-passkey.png')
+  else {
+    await element.evaluate((node) => node.scrollIntoView({ block: 'center' }))
+    await wait(400)
+    const cardState = await overlayState()
+    console.log(`通行密钥卡片截前状态：自家提醒弹窗=${cardState.ownReminder ? '仍存在（异常）' : '已关闭'}，其它可见弹窗=${cardState.visiblePopups}`)
+    await shot(element, 'screenshot-passkey.png')
+  }
 
   if (madeDemoUsers.length > 0) {
     const gone = []

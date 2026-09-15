@@ -1,6 +1,17 @@
 # dsh-ui-auth — DSH Web UI 认证网关插件
 
 [![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
+[![npm version](https://img.shields.io/npm/v/dsh-ui-auth.svg)](https://www.npmjs.com/package/dsh-ui-auth)
+[![npm downloads](https://img.shields.io/npm/dm/dsh-ui-auth.svg)](https://www.npmjs.com/package/dsh-ui-auth)
+
+## 🔴 兼容性提示：legacy 版本（DSH 0.1.1-rc.2）的支持将于 v0.7.0 起结束
+
+![legacy support ends in v0.7.0](https://img.shields.io/badge/legacy%20support-ends%20in%20v0.7.0-red)
+
+v0.7.0 起本插件**只跟随 DSH 的新版本开发**（当前为 `0.1.2-rc.1` ~ `0.1.5-rc.1` 及其后续版本），
+不再对 `DSH 0.1.1-rc.2` 这条旧传输线（dotted `/api/<a>.<b>` + `apiProxy`）做适配与验收。
+若 DSH 后续架构有大变动，我会**提前声明**该版本的支持结束时间，不会突然中断。
+仍在使用 0.1.1-rc.2 的部署请在此之前按 [DSH 版本兼容性](#dsh-版本兼容性) 一节规划升级。
 
 给 DeepSeek Harness（DSH）的 Web UI 加一道**用户名 / 密码登录门**：未登录时无法访问任何页面、
 API 或 WebSocket 通道；登录后可管理用户、邀请码、两步验证（TOTP）与**通行密钥（Passkey）**，

@@ -51,11 +51,11 @@ gh run list --workflow=npm-publish.yml   # 查看运行结果
 1. 修改 `package.json` 的 `version`（并同步 `package-lock.json`），在 `CHANGELOG.md` 顶部
    新增该版本条目（含验证结果表）；行为或界面有变化时同步更新 `README.md`；
 2. `npm test`、`npm run typecheck`、`npm run store:check`、`npm run verify:clean` 均通过后提交并推送 `main`；
-3. 打 tag 并创建 Release：
+3. 打 tag 并创建 Release（**标题只写版本号**，不要附加说明——说明写在 Release 正文里）：
    ```bash
    git tag -a vX.Y.Z -m "dsh-ui-auth X.Y.Z"
    git push origin vX.Y.Z
-   gh release create vX.Y.Z --title "dsh-ui-auth vX.Y.Z — <一句话摘要>" --notes-file <release-notes.md> --verify-tag
+   gh release create vX.Y.Z --title "vX.Y.Z" --notes-file <release-notes.md> --verify-tag
    ```
 4. CI 会据此自动发布到 npm（幂等：已发布的版本会跳过）。
 
