@@ -146,6 +146,17 @@ DSH_LEGACY_URL=http://127.0.0.1:3080 node test/live-legacy-check.mjs
 **同类排查**：审计了全部设置页客户端 bundle 的加载期调用（`remote.<ns>.<method>`），
 除以上两页外没有第三个"加载即 403"的页面；其余可见的设置项属于**有意的收紧**，见下表。
 
+**legacy 线审计（0.1.1-rc.2，同一份真实部署）**：不存在同类问题——该线用的是单数 `agentPreset.*`
+端点，且本插件在 legacy 路径只拦管理员面，普通用户调用 `agentPreset.list` 得到 **200 + ok=true**
+（浏览器实测【Agent 预设】与【插件】两页均正常渲染，无失败文案）。
+`pluginInventory.list` 在该组合下返回 404（宿主未挂载该 Remote）——关键不变量是**插件层不得返回 403**，
+它已随 `test/live-legacy-check.mjs` 固定成断言（**16 项**）。
+
+> 两线的**有意差异**（modern 更严）在预设作者权限上体现得最明显：legacy 允许普通用户调用
+> `agentPreset.copy/remove`（单用户 DSH 下预设在用户自己的 `DSH_HOME` 内，属 DSH 设计能力）；
+> modern 多用户部署里预设有**共享清单**且可挂载插件与提示词，因此 `agentPresets/{copy,deletePreset}`
+> 对普通用户保持拒绝。需要放开的部署可用 `uiAuth.registerPolicy()` 逐条登记。
+
 ### 已知边界：普通用户设置页中仍被有意收紧的部分（0.1.2+）
 
 以下端点在 modern 路径下对普通用户保持拒绝，因此对应界面元素会显示"不可用"或按操作报错；

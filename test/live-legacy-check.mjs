@@ -74,6 +74,18 @@ for (const [method, payload] of [
 const exported = await raw('/api/session.export?sessionId=does-not-exist-probe', { headers: { cookie } })
 check('普通用户导出他人/不存在会话 → 403/404（属主检查生效）', [403, 404].includes(exported.status), String(exported.status))
 
+// ---- 设置页加载依赖的端点不得被插件层拒绝（0.6.5 同类缺陷的 legacy 侧防护）----
+// 这两页在 legacy 线上分别是 agentPreset.* 与 pluginInventory.*；本插件在 legacy 路径只拦
+// 管理员面，所以它们要么被宿主正常处理（200/400/404），要么在宿主未挂载时 404——
+// 唯一不允许的是**插件层 403**（那会让整页加载失败，正是 modern 线修过的那种缺陷）。
+const presetList = await dotted(cookie, 'agentPreset.list', {})
+check('普通用户 agentPreset.list 未被插件层拒绝（预设页可加载）',
+  presetList.status !== 403 && presetList.envelope?.result?.ok === true,
+  `${presetList.status} ok=${presetList.envelope?.result?.ok}`)
+const inventory = await dotted(cookie, 'pluginInventory.list', {})
+check('普通用户 pluginInventory.list 未被插件层拒绝（插件页可加载）',
+  inventory.status !== 403, `${inventory.status}`)
+
 const logout = await raw('/auth/logout', { method: 'POST', headers: { cookie } })
 check('登出 → 200', logout.status === 200, String(logout.status))
 check('登出后 dotted /api/session.list → 401', (await dotted(cookie, 'session.list', { request: {} })).status === 401)
