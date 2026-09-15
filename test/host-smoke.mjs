@@ -933,7 +933,7 @@ if (disposers.length > 0) {
   check('totp: 管理员可移除他人 TOTP', adminRm.status === 200 && parseJson(me4).me.totpEnabled === false)
 }
 
-// ---- 20) 2FA 登录流程（密码 + TOTP 两步 / 免密 TOTP，0.5.0） ----
+// ---- 20) 2FA 登录流程（0.6.4：密码 + TOTP；免密 TOTP 已移除） ----
 {
   const serverD = new EventEmitter()
   serverD.on('request', () => {})
@@ -966,9 +966,9 @@ if (disposers.length > 0) {
   // 1) 绑定 TOTP 但 2FA 关闭：密码直接登录（无需动态码）
   const s0 = await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234' })
   check('2fa: 2FA 关闭时密码直接登录成功', s0.status === 200 && parseJson(s0).totpRequired !== true && /dsh_auth=/.test(s0.headers['set-cookie'] || ''))
-  // 2) 2FA 关闭：免密 TOTP 登录成功（密码或动态码二选一）
+  // 2) 0.6.4：免密 TOTP 登录路径已移除，只给动态码 → 400
   const s1 = await call('POST', '/auth/login', { username: 'reg1', totp: good })
-  check('2fa: 2FA 关闭时免密 TOTP 登录成功', s1.status === 200 && /dsh_auth=/.test(s1.headers['set-cookie'] || ''))
+  check('2fa: 免密 TOTP 已移除（缺密码 → 400）', s1.status === 400 && !/dsh_auth=/.test(s1.headers['set-cookie'] || ''))
   // 3) 开启两步验证开关
   const on = await call('POST', '/auth/rpc/totpSet2fa', { enabled: true }, reg1c)
   const st1 = await call('POST', '/auth/rpc/totpStatus', {}, reg1c)
@@ -979,21 +979,97 @@ if (disposers.length > 0) {
   // 5) 2FA 开启：密码 + TOTP → 登录成功
   const s3 = await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234', totp: good })
   check('2fa: 开启后密码 + 动态码两步登录成功', s3.status === 200 && /dsh_auth=/.test(s3.headers['set-cookie'] || ''))
-  // 6) 2FA 开启：免密 TOTP 被拒（强制两者）
+  // 6) 2FA 开启：只给动态码 → 400（免密路径不存在）
   const s4 = await call('POST', '/auth/login', { username: 'reg1', totp: good })
-  check('2fa: 开启后免密 TOTP 被拒（403）', s4.status === 403)
+  check('2fa: 开启后只给动态码 → 400', s4.status === 400)
   // 7) 2FA 开启：密码 + 错误动态码 → 403
   const s5 = await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234', totp: '000000' })
   check('2fa: 开启后动态码错误 → 403', s5.status === 403)
-  // 8) 未启用 TOTP 的账号免密 → 400
+  // 8) 未启用 TOTP 的账号只给动态码 → 400（不区分账号状态，避免枚举）
   const s6 = await call('POST', '/auth/login', { username: 'admin', totp: '000000' })
-  check('2fa: 未启用 TOTP 的账号免密登录 → 400', s6.status === 400)
+  check('2fa: 未启用 TOTP 的账号只给动态码 → 400', s6.status === 400)
   // 9) 关闭两步验证 → 密码直接登录恢复
   await call('POST', '/auth/rpc/totpSet2fa', { enabled: false }, reg1c)
   const s7 = await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234' })
   check('2fa: 关闭后密码直接登录恢复', s7.status === 200 && parseJson(s7).totpRequired !== true && /dsh_auth=/.test(s7.headers['set-cookie'] || ''))
-  // 清理：移除 reg1 的 TOTP
+  // 10) 清理：移除 reg1 的 TOTP
   await call('POST', '/auth/rpc/totpRemove', { code: good }, reg1c)
+}
+
+// ---- 20b) 通行密钥管理面（0.6.4）：鉴权、票据、反锁死 ----
+{
+  const serverP = new EventEmitter()
+  serverP.on('request', () => {})
+  const ctxP = {
+    get(n) {
+      if (n === 'credentials') return creds
+      if (n === 'fs') return fsMock
+      if (n === 'webServer') return { server: serverP }
+      return undefined
+    },
+    effect() {},
+    interval() { return () => {} },
+    timeout(ms) { return new Promise((r) => setTimeout(r, ms)) },
+  }
+  apply(ctxP)
+  await new Promise((r) => setTimeout(r, 400))
+  const call = (method, path, body, cookie, host) => new Promise((resolve) => {
+    const r = makeRes()
+    const req = makeReq(method, path, cookie, body === undefined ? undefined : JSON.stringify(body))
+    req.headers.host = host ?? 'localhost:3080'
+    serverP.emit('request', req, r)
+    setTimeout(() => resolve(r), 120)
+  })
+  const adminPk = cookieOf(await call('POST', '/auth/login', { username: 'admin', password: adminPassword }))
+
+  const list = await call('POST', '/auth/rpc/passkeyList', {}, adminPk)
+  const listJson = parseJson(list)
+  check('passkey: 管理面列出通行密钥与环境', list.status === 200 && listJson.ok === true && Array.isArray(listJson.passkeys)
+    && listJson.rp.supported === true && listJson.rp.rpId === 'localhost')
+  check('passkey: 未登录不可访问管理面', (await call('POST', '/auth/rpc/passkeyList', {})).status === 401)
+
+  // 无票据的写操作一律 403（会话被窃取也无法添加/删除因子）
+  check('passkey: 无票据 passkeyAddOptions → 403', (await call('POST', '/auth/rpc/passkeyAddOptions', { preferred: 'localDevice' }, adminPk)).status === 403)
+  check('passkey: 无票据 passkeyRemove → 403', (await call('POST', '/auth/rpc/passkeyRemove', { id: 'x' }, adminPk)).status === 403)
+  check('passkey: 无票据 passkeyRename → 403', (await call('POST', '/auth/rpc/passkeyRename', { id: 'x', label: 'y' }, adminPk)).status === 403)
+  check('passkey: 无票据 passkeyAddVerify → 403', (await call('POST', '/auth/rpc/passkeyAddVerify', { handle: 'x' }, adminPk)).status === 403)
+
+  // 二次验证：密码错误 → 403；密码正确 → 一次性票据
+  check('passkey: 二次验证密码错误 → 403', (await call('POST', '/auth/rpc/passkeyStepUp', { password: 'wrong-pass' }, adminPk)).status === 403)
+  const stepUp = await call('POST', '/auth/rpc/passkeyStepUp', { password: adminPassword }, adminPk)
+  const ticket = parseJson(stepUp).ticket
+  check('passkey: 二次验证（密码）签发一次性票据', stepUp.status === 200 && typeof ticket === 'string' && parseJson(stepUp).mode === 'password')
+
+  // 票据可用（取注册选项），且 IP 变化后失效
+  const options = await call('POST', '/auth/rpc/passkeyAddOptions', { ticket, preferred: 'localDevice' }, adminPk)
+  const optionsJson = parseJson(options)
+  check('passkey: 持票可取注册选项（residentKey=required + UV）', options.status === 200 && optionsJson.ok === true
+    && optionsJson.options.authenticatorSelection.residentKey === 'required'
+    && optionsJson.options.authenticatorSelection.userVerification === 'required', `status=${options.status}`)
+  check('passkey: 注册选项带 excludeCredentials 与 rp', Array.isArray(optionsJson.options.excludeCredentials) && optionsJson.options.rp.id === 'localhost')
+
+  const verified = await call('POST', '/auth/rpc/passkeyAddVerify', { ticket, handle: optionsJson.handle, response: { id: 'x', rawId: 'x', type: 'public-key', response: {} }, label: 'smoke' }, adminPk)
+  check('passkey: 伪造注册响应 → 400 且票据被消费（不可重放）', verified.status === 400)
+  const replay = await call('POST', '/auth/rpc/passkeyAddOptions', { ticket }, adminPk)
+  check('passkey: 已消费的票据不可重放 → 403', replay.status === 403)
+
+  // 反锁死：管理员清空因子时同步关闭 2FA，且不会让账号失去全部因子
+  const enable = await call('POST', '/auth/rpc/totpSet2fa', { enabled: true }, adminPk)
+  check('passkey: 无任何因子的账号不能开启 2FA（先绑定因子）', enable.status === 400)
+  const genB = await call('POST', '/auth/rpc/totpGenerate', {}, adminPk)
+  const secretB = parseJson(genB).secret
+  const codeB = totpCodeAt(secretB, Date.now() / 1000)
+  await call('POST', '/auth/rpc/totpVerify', { code: codeB }, adminPk)
+  const enable2 = await call('POST', '/auth/rpc/totpSet2fa', { enabled: true }, adminPk)
+  check('passkey: 绑定 TOTP 后可开启 2FA', enable2.status === 200 && parseJson(enable2).twoFactor === true)
+  const removeTotp = await call('POST', '/auth/rpc/totpRemove', { code: totpCodeAt(secretB, Date.now() / 1000) }, adminPk)
+  check('passkey: 移除唯一因子时自动关闭 2FA（避免锁死）', removeTotp.status === 200 && parseJson(removeTotp).twoFactor === false)
+  const reset = await call('POST', '/auth/rpc/passkeyReset', { username: 'admin' }, adminPk)
+  check('passkey: 管理员清除指定用户通行密钥（救援路径）', reset.status === 200 && parseJson(reset).removed === 0)
+  // 普通用户（reg1，场景 18 创建）不得使用管理员救援接口
+  const reg1Pk = cookieOf(await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234' }))
+  check('passkey: 普通用户不可用管理员救援接口',
+    (await call('POST', '/auth/rpc/passkeyReset', { username: 'admin' }, reg1Pk)).status === 403)
 }
 
 // ---- 21) bootstrap 自毁（0.5.1）：改密成功后删除明文引导文件 ----

@@ -666,15 +666,16 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
   check('TOTP', 'me 显示已启用且不泄露 secret', parseJson(me).me.totpEnabled === true && !meStr.includes('totpSecret'))
   const gen2 = await rpcCall('totpGenerate', {}, test1Cookie)
   check('TOTP', '已启用后重新生成 → 400', gen2.status === 400)
-  // 绑定 TOTP 后默认不强制 2FA：密码直接登录 / 免密 TOTP 均可
+  // 绑定 TOTP 后默认不强制 2FA：密码直接登录
   const loginPlain1 = makeRes()
   server.emit('request', makeReq('POST', '/auth/login', undefined, JSON.stringify({ username: 'test1', password: '12345678' }), '10.3.0.1'), loginPlain1)
   await settle()
   check('TOTP', '绑定后默认 2FA 关闭：密码直接登录成功', loginPlain1.status === 200 && parseJson(loginPlain1).totpRequired !== true && /dsh_auth=/.test(loginPlain1.headers['set-cookie'] || ''))
+  // 0.6.4：免密 TOTP 登录已移除 —— 只给动态码不给密码一律 400
   const loginFree1 = makeRes()
   server.emit('request', makeReq('POST', '/auth/login', undefined, JSON.stringify({ username: 'test1', totp: goodCode }), '10.3.0.2'), loginFree1)
   await settle()
-  check('TOTP', '2FA 关闭时免密 TOTP 登录成功', loginFree1.status === 200 && /dsh_auth=/.test(loginFree1.headers['set-cookie'] || ''))
+  check('TOTP', '0.6.4 起免密 TOTP 登录已移除（缺密码 → 400）', loginFree1.status === 400 && !/dsh_auth=/.test(loginFree1.headers['set-cookie'] || ''))
   // 开启两步验证开关
   const on2fa = await rpcCall('totpSet2fa', { enabled: true }, test1Cookie)
   check('TOTP', '开启两步验证开关', on2fa.status === 200)
@@ -693,16 +694,16 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
   server.emit('request', makeReq('POST', '/auth/login', undefined, JSON.stringify({ username: 'test1', password: '12345678', totp: '000000' }), '10.3.0.5'), loginBadTotp)
   await settle()
   check('TOTP', '2FA 开启：动态码错误 → 403', loginBadTotp.status === 403)
-  // 2FA 开启：免密 TOTP 被拒
+  // 2FA 开启：只给动态码不给密码 → 400（免密路径已不存在）
   const loginFreeReject = makeRes()
   server.emit('request', makeReq('POST', '/auth/login', undefined, JSON.stringify({ username: 'test1', totp: goodCode }), '10.3.0.6'), loginFreeReject)
   await settle()
-  check('TOTP', '2FA 开启：免密 TOTP 被拒（403）', loginFreeReject.status === 403)
-  // 未启用 TOTP 的账号免密 → 400
+  check('TOTP', '2FA 开启：只给动态码 → 400（免密 TOTP 已移除）', loginFreeReject.status === 400)
+  // 未启用 TOTP 的账号只给动态码 → 同样 400（不再区分账号状态，避免枚举）
   const loginFreeNoTotp = makeRes()
   server.emit('request', makeReq('POST', '/auth/login', undefined, JSON.stringify({ username: 'admin', totp: '000000' }), '10.3.0.7'), loginFreeNoTotp)
   await settle()
-  check('TOTP', '未启用 TOTP 的账号免密 → 400', loginFreeNoTotp.status === 400)
+  check('TOTP', '未启用 TOTP 的账号只给动态码 → 400', loginFreeNoTotp.status === 400)
   // 普通用户不能移除他人 TOTP（test1 尝试移除 admin 的）
   const rmOther = await rpcCall('totpRemove', { username: 'admin', code: goodCode }, test1Cookie)
   check('TOTP', '普通用户移除他人 TOTP → 403', rmOther.status === 403)

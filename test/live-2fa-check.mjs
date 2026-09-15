@@ -1,9 +1,10 @@
 // ============================================================================
-// live-2fa-check.mjs —— 真实部署 2FA 登录流程验证（0.5.0）
-// 需要：面板以 0.5.0（含 2FA 登录）运行；test1 已启用 TOTP（用户已添加令牌）。
-// 验证：1) test1 密码登录 → totpRequired（不签发会话）；
-//       2) 密码 + 错误动态码 → 403；3) 免密 + 错误动态码 → 403；
-//       4) 未启用 TOTP 的账号密码登录照常（用 reg1 若存在，否则跳过）。
+// live-2fa-check.mjs —— 真实部署 2FA 登录流程验证（0.6.4 登录矩阵）
+// 需要：面板运行 0.6.4 及以后版本；test1 已启用 TOTP（用户已添加令牌）。
+// 验证：1) test1 密码登录 → 成功（绑定 TOTP 后默认 2FA 关闭）；
+//       2) 密码 + 任意动态码 → 仍成功（2FA 未开启时动态码非必需）；
+//       3) 只给动态码不给密码 → 400（0.6.4 起免密 TOTP 登录已移除）；
+//       4) 不存在用户只给动态码 → 400（不再区分账号状态，防枚举）。
 // 完整「密码 + 正确动态码」两步登录由用户在 Authenticator 中输入动态码验证。
 // 运行：node test/live-2fa-check.mjs
 // ============================================================================
@@ -46,15 +47,19 @@ const main = async () => {
   // 2) 2FA 关闭时密码 + 任意动态码 → 仍成功（动态码非必需）
   const s2 = await retry(() => post('/auth/login', { username: 'test1', password: '12345678', totp: '000000' }, '10.4.0.2'))
   check('2FA 关闭时密码 + 动态码（任意）仍成功', s2.status === 200, s2.body.slice(0, 80))
-  // 3) 免密 + 错误动态码 → 403（免密路径始终验证动态码）
+  // 3) 只给动态码不给密码 → 400（0.6.4 起免密 TOTP 登录路径已移除）
   const s3 = await retry(() => post('/auth/login', { username: 'test1', totp: '000000' }, '10.4.0.3'))
-  check('免密 TOTP + 错误动态码 → 403', s3.status === 403, s3.body.slice(0, 80))
-  // 4) 不存在的用户免密 → 401 通用文案（防账号枚举回归）
+  check('只给动态码不给密码 → 400（免密 TOTP 已移除）', s3.status === 400, s3.body.slice(0, 80))
+  // 4) 不存在的用户只给动态码 → 400（与上一条同文案，不泄露账号是否存在）
   const s4 = await retry(() => post('/auth/login', { username: 'definitely-not-a-user', totp: '000000' }, '10.4.0.4'))
-  check('不存在用户免密 → 401 通用文案（防枚举）', s4.status === 401 && JSON.parse(s4.body).error === '用户名或密码错误', s4.body.slice(0, 80))
+  check('不存在用户只给动态码 → 400（与存在账号同响应，防枚举）', s4.status === 400, s4.body.slice(0, 80))
+  // 5) 不存在的用户 + 密码 → 401 通用文案（防账号枚举回归）
+  const s5 = await retry(() => post('/auth/login', { username: 'definitely-not-a-user', password: 'whatever-1234' }, '10.4.0.5'))
+  check('不存在用户 + 密码 → 401 通用文案（防枚举）', s5.status === 401 && JSON.parse(s5.body).error === '用户名或密码错误', s5.body.slice(0, 80))
   const failed = results.filter((r) => !r.ok)
   console.log('\nLIVE 2FA CHECK: ' + (results.length - failed.length) + '/' + results.length + ' passed')
-  console.log('提示：请在浏览器中验证 2FA 开关——test1 登录后在【用户管理】勾选「启用两步验证」，再登录（需密码 + Authenticator 动态码）；取消勾选后密码或动态码任选其一。')
+  console.log('提示：通行密钥请在浏览器中验证——【用户管理】→「通行密钥（Passkey）」添加本机密钥或手机扫码；')
+  console.log('      注意必须使用 http://localhost:3080 打开面板（Chrome 不接受 IP 字面量作为通行密钥域）。')
   process.exit(failed.length === 0 ? 0 : 1)
 }
 main().catch((e) => { console.error('LIVE 2FA CHECK ERROR: ' + String(e)); process.exit(1) })

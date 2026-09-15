@@ -1,15 +1,18 @@
 # dsh-ui-auth 安全验证报告
 
 > 验证对象：`dsh-ui-auth`（DSH Web UI 认证网关插件）
-> 验证版本：0.5.0（本报告对应的测试基线）
+> 验证版本：0.6.4（本报告对应的测试基线；0.6.4 增加通行密钥 Passkey/WebAuthn，
+> 并定稿登录矩阵——「免密 + 动态码」登录已移除）
 > 部署场景：公网服务器部署 DSH，`dsh-ui-auth` 作为 Web UI 的前置认证层，仅允许
 > 登录用户访问页面、API 与 WebSocket，并实施管理员/普通用户两级权限与数据隔离
-> （REST/列表接口 + WebSocket 事件流均按用户隔离），邀请码注册与 TOTP 两步验证。
-> 验证方法：`test/security-suite.mjs`（119 项自动化断言，驱动真实网关代码路径，
+> （REST/列表接口 + WebSocket 事件流均按用户隔离），邀请码注册、TOTP 两步验证与
+> 通行密钥（Passkey）登录。
+> 验证方法：`test/security-suite.mjs`（147 项自动化断言，驱动真实网关代码路径，
 > mock 服务器 + mock 凭据存储）＋ 静态源码检查 ＋ host-smoke（会话持久化/审计/
-> 注册/TOTP 场景）＋ 全量回归（crypto 向量 / RFC 6238 TOTP 向量 / 客户端冒烟 /
-> 主机冒烟）＋ 真实部署验证（WS 隔离 / 限流配置 / 会话免登录恢复 / 审计 JSONL /
-> 注册端点 / TOTP 全链路）。
+> 注册/TOTP/通行密钥管理面场景）＋ 全量回归（crypto 向量 / RFC 6238 TOTP 向量 /
+> 客户端冒烟 / 登录页与端点联通 / 主机冒烟）＋ 浏览器级端到端（真实 Chrome +
+> CDP 虚拟认证器，通行密钥注册与免用户名登录）＋ 真实部署验证（WS 隔离 / 限流配置 /
+> 会话免登录恢复 / 审计 JSONL / 注册端点 / TOTP 全链路）。
 
 ---
 
@@ -127,6 +130,39 @@ API Key（仅管理员）；③ 会话/工作区数据按用户隔离；④ 凭�
 | 事件流升级在 apiProxy 缺失时 fail-closed（销毁，绝不透传全量帧） | PASS |
 | 缺 WebSocket-Key / 未认证 / `/auth/*` 升级一律销毁 | PASS |
 
+### L. 通行密钥 Passkey / WebAuthn（0.6.4，浏览器级 27 项 + 离线 34 项）
+自动化证据：`test/live-passkey-check.mjs`（真实 DSH `0.1.5-rc.1` + 真实 Chrome + CDP 虚拟认证器，
+**27/27**）、`test/login-page-check.mjs`（登录页与端点联通，**18/18**）、`test/host-smoke.mjs`
+（管理面授权与反锁死，**16 项**）、`test/client-smoke.cjs`（客户端断言，**9 项**）、
+`test/webauthn-probe.mjs`（地址可用性实测）。
+
+| 用例 | 结果 |
+|---|---|
+| 注册要求可发现凭据：`residentKey: 'required'` + `requireResidentKey` | PASS |
+| 注册与登录都要求用户验证（`userVerification: 'required'`），未完成 UV 的断言被拒 | PASS |
+| 证明书策略 `attestation: 'none'`：不索取、不存储设备厂商证明 | PASS |
+| 挑战一次性：注册/登录/二次验证各自用途分离，重放或跨用途使用被拒 | PASS |
+| 挑战 5 分钟过期，内存中限定条数（防资源耗尽） | PASS |
+| 严格校验 `origin` 与 RP ID；IP 字面量 / 明文 HTTP 非回环地址提前拒绝（409 + 可操作提示） | PASS |
+| 免用户名登录：按凭据 id 反查账号，凭据不属于该账号时拒绝 | PASS |
+| 签名计数器回退检出（认证器被复制的迹象）→ 拒绝本次登录 | PASS |
+| 添加/重命名/删除通行密钥均需二次验证：密码 + （动态码 或 已有通行密钥断言） | PASS |
+| 二次验证签发一次性票据（5 分钟、绑定账号与来源 IP、单次使用、不可重放） | PASS |
+| 无票据或票据无效时管理接口一律 403（仅窃取会话不足以改动登录因子） | PASS |
+| 注册选项携带 `excludeCredentials`（避免重复注册同一认证器） | PASS |
+| 响应只下发摘要：`passkeyList` 不含公钥；审计只记录凭据 id 前 8 位等公开元数据 | PASS |
+| 每账号上限 20 个通行密钥（内存与记录写入两侧都校验） | PASS |
+| 反锁死：2FA 开启且仅剩一个通行密钥时拒绝删除（400，附操作指引） | PASS |
+| 反锁死：2FA 开启时移除最后一个因子（TOTP 或通行密钥）自动关闭 2FA | PASS |
+| 无任何因子的账号不能开启 2FA | PASS |
+| 管理员救援：可清除指定用户的全部通行密钥；普通用户调用被拒 | PASS |
+| 未登录访问通行密钥管理面 → 401；伪造断言登录不下发会话 | PASS |
+| 登录页内联脚本可解析且不回归为原生表单提交（离线语法断言） | PASS |
+
+**记录规范化的作用**：`passkeys` 字段与 `twoFactor` 不变量在凭据库的读取、创建、修改三个边界上
+统一规范化（`sanitizePasskeys` + `reconcileTwoFactor`）。因此手工编辑过的 `.credentials.yaml`
+（例如把 `twoFactor` 改成 `true` 却没有因子）会在下次读取时被修正，不会产生"谁也登不进去"的账号。
+
 ---
 
 ## 3. 本次验证发现并修复的问题
@@ -180,17 +216,27 @@ WS 事件流深层协议攻击面（事件内容已按用户逐帧隔离，但�
 | 引导文件含明文密码 | `dsh-ui-auth-bootstrap.txt` 明文记录首次管理员密码 | 工作目录不得被 Web 服务静态托管；首次登录后立即改密并删除该文件 |
 | 客户端锁页/导航隐藏为 UX 层 | 真实安全边界是服务端 403 | 勿以客户端隐藏替代服务端守卫（已如此设计） |
 | 普通用户仍可浏览模型列表（llm.providers） | 无法区分“查看可用模型”与“修改配置”，为可用性取舍 | 文档已注明；Key 与配置写入始终 403 |
+| 通行密钥要求可用来源 | 浏览器规则：IP 字面量不能作为 RP ID，明文 HTTP 非回环不是安全上下文。在 `http://127.0.0.1:3080` 上通行密钥**根本无法工作**（实测 Chrome 152：`SecurityError: … is an invalid domain`） | 用 `http://localhost:3080` 或域名 + HTTPS；插件在不可用地址上提前返回 409 并在界面给出应改用的地址；不影响密码/TOTP 登录 |
+| 通行密钥设备丢失 | 通行密钥只存在于设备（或用户的密码管理器）中，服务器无法代为恢复 | 绑定多个通行密钥；或保留 TOTP 作为第二因子；管理员可用「清除通行密钥」救援；管理员自身全部丢失且无 TOTP 时按 README 重置 `admin` 记录 |
+| 依赖供应链 | 新增运行时依赖 `@simplewebauthn/server`（含传递依赖）与构建期 `@simplewebauthn/browser` | 两者均为活跃维护的社区标准实现，版本固定在 `package.json`；npm 发布带 provenance 证明；`npm run store:check` 持续校验依赖与权限信号 |
 
 ---
 
 ## 6. 复现
 
 ```bash
-# 安全套件（98 项）
+# 安全套件（147 项）
 node test/security-suite.mjs
 
-# 全量回归（语法检查 + crypto 向量 + 客户端冒烟 + 主机冒烟 + 安全套件）
+# 全量回归（语法检查 + crypto 向量 + 客户端冒烟 + 主机冒烟 + 登录页/端点 + 安全套件）
 npm test
+
+# 通行密钥浏览器端到端（需要隔离实例 + 真实 Chrome；须用 http://localhost:<port>）
+#   DSH_PK_URL=http://localhost:3201 DSH_PK_USER=admin DSH_PK_PASSWORD=... node test/live-passkey-check.mjs
+npm run test:passkey
+
+# 通行密钥可用地址实测（RP ID 规则，独立小服务器 + 虚拟认证器）
+node test/webauthn-probe.mjs
 ```
 
 安全套件以 mock 服务器驱动真实网关代码路径，不依赖真实 DSH 进程；结果以

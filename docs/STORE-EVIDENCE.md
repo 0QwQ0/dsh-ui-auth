@@ -196,15 +196,21 @@ DSH015_URL=http://127.0.0.1:3201 DSH015_BOOTSTRAP=<tmp>/work/dsh-ui-auth-bootstr
 |---|---|---|---|
 | `qrcode@^1.5.4` | runtime dependency | TOTP 绑定二维码：SVG data URL（Node 端 `toString type:'svg'`，零 canvas 依赖） | MIT；纯 JS |
 | `ws@^8.21.0` | runtime dependency | 0.1.2+ 的 `/api/remote.mux` 流 mux（WebSocket 服务端）实现 | MIT；零依赖的纯 JS 实现，与 DSH 自身所用版本同线（DSH `dsh-api-gateway` 亦依赖 `ws@^8.21.0`） |
+| `@simplewebauthn/server@^14.0.2` | runtime dependency（0.6.4 起） | 通行密钥（Passkey / WebAuthn）服务端：注册与登录的选项生成、挑战校验、签名与计数器校验 | MIT；社区事实标准实现（SimpleWebAuthn），纯 JS。自带传递依赖：`@hexagon/base64`、`@levischuck/tiny-cbor`、`@peculiar/asn1-android`/`-ecc`/`-rsa`/`-x509`、`@peculiar/asn1-schema`、`@peculiar/asn1-x509`、`@peculiar/utils`、`@simplewebauthn/types`、`pvtsutils`、`tslib`（均为纯 JS，无原生模块、无生命周期脚本） |
 | `@deepseek-ai/cordis@^4.0.1` | peerDependency | Cordis 宿主契约 | 官方命名空间 peer，由宿主安装体提供 |
 | `typescript`、`esbuild`、`@types/node`、`@types/ws` | devDependency | 0.6.2 起：从 `src/*.ts` 构建 `lib/*.js` 与类型检查 | **不进运行产物**；`lib/*.js` 作为构建产物随仓库与 npm 包分发，安装期不需要它们 |
-| `puppeteer@^25.9.0` | devDependency | 浏览器级验收（`npm run test:ui`）、截图脚本 | 不进运行产物 |
+| `@simplewebauthn/browser@^14.0.0` | devDependency（0.6.4 起） | 浏览器端注册/登录仪式（`src/client.ts` 与 `src/passkey-browser.ts`） | **构建期依赖**：由 esbuild 内联进 `lib/client.js` 与 `lib/passkey-browser.js`，运行时不再从 npm 解析，因此**不是运行依赖**；与 `@simplewebauthn/server` 同版本线，协议行为一致 |
+| `puppeteer@^25.9.0` | devDependency | 浏览器级验收（`npm run test:ui`、`npm run test:passkey`）、截图脚本 | 不进运行产物 |
 
 审核建议：`lib/*.js` 是构建产物，审阅时以 `src/*.ts` 为准（构建命令见
 `docs/DSH-0.1.5-COMPATIBILITY.md` 第 5 节；CI 会校验 `lib/` 与 `src/` 同步）。
 
-**供应链说明**：两个运行依赖都固定于 `package-lock.json`；自动批准通道要求零运行依赖，
-故本插件不适用 `source-verified`，走 `user-reviewed` 人工审查路径。
+**供应链说明**：三个运行依赖都固定于 `package-lock.json`；自动批准通道要求零运行依赖，
+故本插件不适用 `source-verified`，走 `user-reviewed` 人工审查路径。0.6.4 新增的
+`@simplewebauthn/server` 是本插件唯一"非零依赖"的运行依赖，选择它的理由：**协议实现
+不由本项目自研**——WebAuthn 的 base64url/CBOR/ASN.1/签名校验细节任何一处自研都容易
+产生静默的安全缺陷；SimpleWebAuthn 由社区长期维护、被广泛部署，且其服务端包不引入
+原生模块或网络能力。
 
 无 `bundledDependencies`、无 install/prepare 等生命周期脚本、无 git submodule、
 无符号链接、无原生/可执行制品（`.node/.exe/.dll/.so` 等）。

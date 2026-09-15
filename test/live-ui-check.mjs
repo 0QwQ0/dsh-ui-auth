@@ -76,6 +76,11 @@ try {
       check('「用户管理」页已渲染（我的账号 / 修改密码 / 两步验证）',
         ['我的账号', '修改密码', '两步验证'].every(text => bodyText.includes(text)),
         `bytes=${bodyText.length}`)
+      // 通行密钥卡片（0.6.4）：可用地址给添加入口，IP 字面量地址给可操作提示
+      check('「用户管理」页出现通行密钥卡片', bodyText.includes('通行密钥（Passkey）'), `bytes=${bodyText.length}`)
+      check('通行密钥卡片按当前访问地址给出正确状态',
+        bodyText.includes('本机通行密钥') || bodyText.includes('改用 http://localhost'),
+        bodyText.includes('本机通行密钥') ? '可用地址：显示添加入口' : 'IP 字面量地址：显示 localhost 提示')
       if (username === 'admin') {
         check('管理员额外看到创建用户 / 邀请码管理',
           bodyText.includes('创建用户') && bodyText.includes('邀请码管理（管理员）'))

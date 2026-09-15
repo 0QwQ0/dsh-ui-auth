@@ -1,7 +1,7 @@
 {
   "name": "dsh-ui-auth",
-  "version": "0.6.2",
-  "description": "DSH Web UI 认证网关：登录保护全部 HTTP/WS 接口；用户管理、邀请码注册与 TOTP 两步验证。",
+  "version": "0.6.4",
+  "description": "DSH Web UI 认证网关：登录保护全部 HTTP/WS 接口；用户管理、邀请码注册、TOTP 两步验证与通行密钥（Passkey/WebAuthn）登录。",
   "type": "module",
   "main": "./lib/index.js",
   "exports": {
@@ -24,13 +24,14 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node build/client.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json",
-    "test": "npm run build && node --check lib/index.js && node --check lib/client.js && node --check lib/modern-gateway.js && node --check lib/modern-policy.js && node test/crypto-vectors.cjs && node test/totp-vectors.mjs && node test/client-smoke.cjs && node test/host-smoke.mjs && node test/security-suite.mjs && node test/modern-policy.test.mjs",
+    "test": "npm run build && node --check lib/index.js && node --check lib/webauthn.js && node --check lib/client.js && node --check lib/passkey-browser.js && node --check lib/modern-gateway.js && node --check lib/modern-policy.js && node test/crypto-vectors.cjs && node test/totp-vectors.mjs && node test/client-smoke.cjs && node test/host-smoke.mjs && node test/login-page-check.mjs && node test/security-suite.mjs && node test/modern-policy.test.mjs",
     "prepack": "npm test",
     "verify:clean": "npm run build && git diff --exit-code -- lib",
     "store:check": "node test/store-contract-check.mjs",
     "test:compat:0.1.5": "node test/live-015-check.mjs",
     "test:compat:0.1.1": "node test/live-legacy-check.mjs",
-    "test:ui": "node test/live-ui-check.mjs"
+    "test:ui": "node test/live-ui-check.mjs",
+    "test:passkey": "node test/live-passkey-check.mjs"
   },
   "dsh": {
     "bundle": {
@@ -54,6 +55,7 @@
     "@deepseek-ai/cordis": "^4.0.1"
   },
   "dependencies": {
+    "@simplewebauthn/server": "^14.0.2",
     "qrcode": "^1.5.4",
     "ws": "^8.21.0"
   },
@@ -66,7 +68,10 @@
     "dsh-plugin",
     "auth",
     "authentication",
-    "login"
+    "login",
+    "passkey",
+    "webauthn",
+    "two-factor"
   ],
   "repository": {
     "type": "git",
@@ -74,6 +79,7 @@
   },
   "license": "MIT",
   "devDependencies": {
+    "@simplewebauthn/browser": "^14.0.0",
     "@types/node": "^26.5.1",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.28.2",

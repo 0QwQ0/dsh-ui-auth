@@ -17,6 +17,24 @@ import type { Duplex } from 'node:stream'
 import { createModernGateway } from './modern-gateway.js'
 import type { ModernGateway, ModernGatewayContext } from './modern-gateway.js'
 import type { Principal } from './modern-policy.js'
+import {
+  MAX_PASSKEYS,
+  assessRelyingParty,
+  authenticationOptions,
+  createChallengeStore,
+  factorState,
+  finishAuthentication,
+  finishRegistration,
+  newUserHandle,
+  normalizePasskeyLabel,
+  reconcileTwoFactor,
+  registrationOptions,
+  relyingPartyIssueMessage,
+  responseCredentialId,
+  sanitizePasskeys,
+  summarizePasskey,
+} from './webauthn.js'
+import type { PasskeyRelyingParty, RelyingPartyIssue, StoredPasskey } from './webauthn.js'
 
 export const name = 'dsh-ui-auth'
 export const inject = ['webServer', 'connection']
@@ -45,6 +63,10 @@ interface UserRecord {
   totpEnabled?: boolean
   totpIgnore?: boolean
   twoFactor?: boolean
+  /** 已绑定的通行密钥（仅存公钥与公开元数据，私钥永不离开用户设备）。 */
+  passkeys?: StoredPasskey[]
+  /** WebAuthn user handle（base64url，稳定不变，用于可发现凭据）。 */
+  webauthnUserHandle?: string
 }
 
 /** 进程内会话条目（sha256(token) 十六进制 → 用户 + 过期时间）。 */
@@ -73,12 +95,27 @@ interface OwnershipTables {
   workspaces: Map<string, string>
 }
 
+/**
+ * 一次性身份验证票据（内存，单次使用，5 分钟有效）。
+ * - purpose `login`：密码已通过，但该账号的第二步是通行密钥（2FA 开启且未绑定 TOTP）。
+ * - purpose `stepup`：高强度校验已通过，可用于一次通行密钥管理操作（增删改）。
+ * 票据绑定用户名与来源 IP，防止跨账号/跨来源重放。
+ */
+interface StepUpTicket {
+  purpose: 'login' | 'stepup'
+  username: string
+  ip: string
+  expiresAt: number
+}
+
 /** 插件运行时状态；`owners`/`invites` 在对象创建后立即挂载。 */
 interface UiAuthState {
   users: Map<string, UserRecord>
   retiredUsers: Set<string>
   sessions: Map<string, SessionEntry>
   fails: Map<string, FailEntry>
+  /** 一次性身份验证票据（密码通过后的第二步 / 通行密钥管理前的二次验证）。 */
+  tickets: Map<string, StepUpTicket>
   ready: boolean
   fatal: string | null
   owners: OwnershipTables
@@ -463,6 +500,13 @@ export function apply(ctx: CordisContext): void {
     const LOCKOUT_MS = lock.lockMs
     const TRUST_PROXY = lock.trustProxy
     const USERNAME_RE = /^[A-Za-z0-9_.-]{2,32}$/
+    // 通行密钥（WebAuthn）配置：默认按浏览器实际访问的主机推导 rpId/origin；
+    // 反向代理或多域名部署可用环境变量显式指定（DSH_AUTH_RP_ID / DSH_AUTH_ORIGIN / DSH_AUTH_RP_NAME）。
+    const PASSKEY_ENV = typeof process !== 'undefined' && process.env !== undefined ? process.env : {}
+    const envText = (v: unknown): string | undefined => typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined
+    const RP_NAME = envText(PASSKEY_ENV.DSH_AUTH_RP_NAME)?.slice(0, 64) ?? 'DeepSeek Harness'
+    const RP_ID_OVERRIDE = envText(PASSKEY_ENV.DSH_AUTH_RP_ID)
+    const ORIGIN_OVERRIDE = envText(PASSKEY_ENV.DSH_AUTH_ORIGIN)
     const userRecordKey = (username: string): string => SCOPE + '/' + (/^[a-z][a-z0-9-]*$/.test(username) && !['ownership', 'invites', 'retired-users'].includes(username)
       ? username : 'user-' + createHash('sha256').update(username).digest('hex'))
 
@@ -629,12 +673,34 @@ export function apply(ctx: CordisContext): void {
       retiredUsers: new Set(),
       sessions: new Map(), // token -> { username, expiresAt }
       fails: new Map(),    // ip -> { count, until }
+      tickets: new Map(),  // 一次性身份验证票据 -> { purpose, username, ip, expiresAt }
       ready: false,
       fatal: null,
     } as UiAuthState
 
+    /** 通行密钥一次性挑战（注册/登录/管理前二次验证）。 */
+    const passkeyChallenges = createChallengeStore()
+
     let creds: CredentialsService | undefined = ctx.get('credentials')
     let store: UiAuthStore | null = null
+
+    /**
+     * 用户记录边界规范化：任何读入或写出的记录都经过这里。
+     * - passkeys 只保留结构合法的条目（防手工编辑、旧版本残留、超量注入）；
+     * - 强制反锁死不变式：2FA 只有在账号仍保有可用因子时才保持开启。
+     */
+    function normalizeUserRecord(raw: UserRecord): UserRecord {
+      const passkeys = sanitizePasskeys(raw.passkeys)
+      const handle = raw.webauthnUserHandle
+      const webauthnUserHandle = typeof handle === 'string' && handle.length > 0 && handle.length <= 128 ? handle : undefined
+      const twoFactor = reconcileTwoFactor({ ...raw, passkeys })
+      return {
+        ...raw,
+        passkeys,
+        twoFactor,
+        ...(webauthnUserHandle !== undefined ? { webauthnUserHandle } : { webauthnUserHandle: undefined }),
+      }
+    }
 
     // 用注入的服务构建持久化 store；payload 存 JSON 字符串（沙箱 realm 对象
     // 无法通过 credentials-local 的 host-realm Object.prototype 校验）。
@@ -652,20 +718,21 @@ export function apply(ctx: CordisContext): void {
             if (p !== null && typeof p === 'object' && typeof p.v === 'number'
               && typeof p.hash === 'string' && typeof p.salt === 'string') {
               const username = typeof p.username === 'string' ? p.username : entry.key.slice(prefix.length)
-              state.users.set(username, p)
+              state.users.set(username, normalizeUserRecord(p as UserRecord))
             }
           }
         },
         async create(rec) {
           if (state.retiredUsers.has(rec.username)) return false
           const key = userRecordKey(rec.username)
-          const jsonString = JSON.stringify(rec)
+          const normalized = normalizeUserRecord(rec)
+          const jsonString = JSON.stringify(normalized)
           const written = await c.modifyRecord(key, async (current) => {
             if (current !== undefined) return undefined
             return { kind: 'grant', payload: jsonString }
           })
           if (written === undefined || written.kind !== 'grant' || written.payload !== jsonString) return false
-          state.users.set(rec.username, rec)
+          state.users.set(rec.username, normalized)
           return true
         },
         async mutate(username, fn) {
@@ -675,15 +742,16 @@ export function apply(ctx: CordisContext): void {
             let parsed
             try { parsed = JSON.parse(current.payload) } catch (err) { return undefined }
             if (parsed === null || typeof parsed !== 'object') return undefined
-            const next = await fn(parsed)
+            const next = await fn(normalizeUserRecord(parsed as UserRecord))
             if (next === undefined) return undefined
-            return { kind: 'grant', payload: JSON.stringify(next) }
+            return { kind: 'grant', payload: JSON.stringify(normalizeUserRecord(next)) }
           })
           if (written !== undefined && written.kind === 'grant' && typeof written.payload === 'string') {
             let parsed
             try { parsed = JSON.parse(written.payload) } catch (err) { return undefined }
-            state.users.set(username, parsed)
-            return parsed
+            const normalized = normalizeUserRecord(parsed as UserRecord)
+            state.users.set(username, normalized)
+            return normalized
           }
           return undefined
         },
@@ -1031,7 +1099,7 @@ export function apply(ctx: CordisContext): void {
       } catch (err) { /* ignore */ }
     }
 
-    function publicUser(p: UserRecord): Principal & { displayName: string; email: string; createdAt: number; totpEnabled: boolean; totpIgnore: boolean; twoFactor: boolean } {
+    function publicUser(p: UserRecord): Principal & { displayName: string; email: string; createdAt: number; totpEnabled: boolean; totpIgnore: boolean; twoFactor: boolean; passkeyCount: number } {
       return {
         username: p.username,
         role: p.role === 'admin' ? 'admin' : 'user',
@@ -1041,6 +1109,7 @@ export function apply(ctx: CordisContext): void {
         totpEnabled: p.totpEnabled === true,
         totpIgnore: p.totpIgnore === true,
         twoFactor: p.twoFactor === true,
+        passkeyCount: factorState(p).passkeyCount,
       }
     }
 
@@ -1062,8 +1131,88 @@ export function apply(ctx: CordisContext): void {
         : { count, until: 0 })
     }
 
+    // ============ 一次性身份验证票据（0.6.4） ============
+    // 用于两类场景：密码已通过但第二步是通行密钥；以及通行密钥管理操作前的高强度校验。
+    // 票据只在内存中、单次使用、5 分钟过期，并绑定用户名与来源 IP。
+    const TICKET_TTL_MS = 5 * 60 * 1000
+    const TICKET_MAX = 256
+
+    function issueTicket(purpose: StepUpTicket['purpose'], username: string, ip: string): string {
+      const now = Date.now()
+      for (const [handle, ticket] of state.tickets) {
+        if (ticket.expiresAt <= now) state.tickets.delete(handle)
+      }
+      while (state.tickets.size >= TICKET_MAX) {
+        const oldest = state.tickets.keys().next().value
+        if (oldest === undefined) break
+        state.tickets.delete(oldest)
+      }
+      const handle = randomHex(24)
+      state.tickets.set(handle, { purpose, username, ip, expiresAt: now + TICKET_TTL_MS })
+      return handle
+    }
+
+    type TicketCheck = { ok: true } | { ok: false; error: string }
+
+    /**
+     * 校验票据。`consume` 为 true 时立即删除（单次使用）；为 false 时只校验，
+     * 供「先取参数、后提交」的两步流程在第一步校验、第二步消费。
+     */
+    function checkTicket(handle: unknown, purpose: StepUpTicket['purpose'], username: string, ip: string, consume: boolean): TicketCheck {
+      if (typeof handle !== 'string' || handle.length === 0 || handle.length > 128) {
+        return { ok: false, error: '本次验证已失效，请重新验证身份' }
+      }
+      const ticket = state.tickets.get(handle)
+      if (ticket === undefined) return { ok: false, error: '本次验证已失效，请重新验证身份' }
+      if (consume) state.tickets.delete(handle)
+      if (ticket.expiresAt <= Date.now()) return { ok: false, error: '验证已超时，请重新验证身份' }
+      if (ticket.purpose !== purpose) return { ok: false, error: '本次验证已失效，请重新验证身份' }
+      if (ticket.username !== username) return { ok: false, error: '本次验证不属于当前账号，请重新验证身份' }
+      if (ticket.ip !== ip) return { ok: false, error: '来源地址已变化，请重新验证身份' }
+      return { ok: true }
+    }
+
+    const consumeTicket = (handle: unknown, purpose: StepUpTicket['purpose'], username: string, ip: string): TicketCheck =>
+      checkTicket(handle, purpose, username, ip, true)
+
+    const peekTicket = (handle: unknown, purpose: StepUpTicket['purpose'], username: string, ip: string): TicketCheck =>
+      checkTicket(handle, purpose, username, ip, false)
+
+    /** 登录页内联脚本用的 HTML 转义（页面里注入的值只来自服务端常量，仍按不可信处理）。 */
+    function escapeHtml(value: string): string {
+      return value
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+    }
+
+    /** 内联 JSON 的 `<` 转义，避免字符串中出现 `</script>` 提前结束脚本块。 */
+    function jsonForScript(value: unknown): string {
+      return JSON.stringify(value).replace(/</g, '\\u003c')
+    }
+
+    /**
+     * 登录页需要知道的通行密钥可用性（不含任何秘密）。
+     * 地址不可用时给出原因与建议地址，页面据此显示提示而不是坏按钮。
+     */
+    function loginPasskeyUi(req: IncomingMessage): { supported: boolean; error?: string; suggestedHost?: string; rpId?: string } {
+      const context = passkeyContext(req)
+      if ('rp' in context) return { supported: true, rpId: context.rp.rpId }
+      const ui: { supported: boolean; error?: string; suggestedHost?: string } = { supported: false, error: context.error }
+      if (context.suggestedHost !== undefined) ui.suggestedHost = context.suggestedHost
+      return ui
+    }
+
     // ============ 登录页 ============
-    function loginPage() {
+    function loginPage(passkey: { supported: boolean; error?: string; suggestedHost?: string; rpId?: string }): string {
+      // 通行密钥入口：可用时给按钮（含本机指纹/面容/设备 PIN 与手机扫码，均由浏览器选择），
+      // 不可用时给出可操作提示（例如「改用 http://localhost:3080」）。
+      const passkeyHint = passkey.supported
+        ? '<div class="hint">也可使用已绑定的通行密钥（指纹 / 面容 / 设备 PIN，或手机扫码）</div>'
+        : '<div class="hint warn">' + escapeHtml(passkey.error !== undefined ? passkey.error : '当前地址无法使用通行密钥') + '</div>'
+      const passkeyButton = passkey.supported
+        ? '<div class="or"><span>或</span></div><button type="button" id="pk" class="ghost">🔑 使用通行密钥登录</button>'
+        : ''
+      const passkeyScript = passkey.supported ? '<script src="/auth/passkey/browser.js"></script>' : ''
       return '<!DOCTYPE html>' +
         '<html lang="zh-CN"><head><meta charset="utf-8">' +
         '<meta name="viewport" content="width=device-width, initial-scale=1">' +
@@ -1088,7 +1237,13 @@ export function apply(ctx: CordisContext): void {
         'button{width:100%;margin-top:22px;padding:11px;border:0;border-radius:8px;' +
         'background:#4f7cff;color:#fff;font-size:15px;font-weight:600;cursor:pointer}' +
         'button:hover{background:#3d6bff}button:disabled{opacity:.6;cursor:default}' +
+        'button.ghost{margin-top:10px;background:none;border:1px solid #3a4356;color:#c9d1e3}' +
         '.err{margin-top:14px;font-size:13px;color:#ff6b6b;min-height:18px}' +
+        '.hint{margin-top:12px;font-size:12px;color:#7b8398;line-height:1.5}' +
+        '.hint.warn{color:#e0a33a}' +
+        '.or{position:relative;text-align:center;margin-top:20px;color:#5c6472;font-size:12px}' +
+        '.or:before{content:"";position:absolute;left:0;right:0;top:50%;height:1px;background:#2a2f3a}' +
+        '.or span{position:relative;background:#171a21;padding:0 10px}' +
         '.foot{margin-top:22px;font-size:12px;color:#5c6472;text-align:center}' +
         '.foot a{color:#4f7cff;text-decoration:none}' +
         '@media (prefers-color-scheme: light){' +
@@ -1101,6 +1256,9 @@ export function apply(ctx: CordisContext): void {
         '.eye{color:#8a92a0}.eye:hover{color:#3a4150}' +
         'button{background:#3b6ee0}' +
         'button:hover{background:#315fd0}' +
+        'button.ghost{background:none;border:1px solid #c9ced9;color:#315fd0}' +
+        '.or:before{background:#dfe3ea}.or span{background:#ffffff}' +
+        '.hint{color:#6b7386}.hint.warn{color:#a3690f}' +
         '.foot{color:#8a92a0}' +
         '.foot a{color:#3b6ee0}}' +
         '</style></head><body><div class="card">' +
@@ -1110,26 +1268,58 @@ export function apply(ctx: CordisContext): void {
         '<label for="u">用户名</label><input id="u" name="username" autocomplete="username" required autofocus>' +
         '<label for="p">密码</label><div class="pw"><input id="p" name="password" type="password" autocomplete="current-password">' +
         '<button type="button" class="eye" id="pe" aria-label="显示/隐藏密码">👁</button></div>' +
-        '<label for="t">动态码（可选）</label><input id="t" name="totp" inputmode="numeric" autocomplete="one-time-code" placeholder="已启用两步验证时填写；密码留空可用动态码免密登录" maxlength="6">' +
+        '<label for="t">动态码（可选）</label><input id="t" name="totp" inputmode="numeric" autocomplete="one-time-code" placeholder="已启用两步验证时填写 6 位动态码" maxlength="6">' +
         '<button id="b" type="submit">登 录</button>' +
         '<div class="err" id="e"></div>' +
-        '</form><div class="foot">访问受保护 · <a href="/auth/register">注册账号</a></div>' +
-        '</div><script>' +
-        '(function(){var f=document.getElementById("f"),e=document.getElementById("e"),b=document.getElementById("b"),t=document.getElementById("t"),' +
-        'p=document.getElementById("p");' +
-        'document.getElementById("pe").addEventListener("click",function(){var on=p.type==="password";p.type=on?"text":"password";' +
-        'this.textContent=on?"🙈":"👁"});' +
+        '</form>' +
+        passkeyButton +
+        passkeyHint +
+        '<div class="foot">访问受保护 · <a href="/auth/register">注册账号</a></div>' +
+        '</div>' +
+        passkeyScript +
+        '<script>' +
+        '(function(){' +
+        'var f=document.getElementById("f"),e=document.getElementById("e"),b=document.getElementById("b"),' +
+        't=document.getElementById("t"),p=document.getElementById("p"),pk=document.getElementById("pk");' +
         'var params=new URLSearchParams(location.search),next=params.get("next");' +
-        'function okPath(p){return p&&p.charAt(0)==="/"&&p.indexOf("//")===-1&&p.indexOf(":")===-1}' +
-        'f.addEventListener("submit",function(ev){ev.preventDefault();b.disabled=true;e.textContent="";' +
-        'fetch("/auth/login",{method:"POST",headers:{"content-type":"application/json"},' +
-        'body:JSON.stringify({username:document.getElementById("u").value,password:document.getElementById("p").value,totp:t.value})})' +
-        '.then(function(r){return r.json().catch(function(){return {}}).then(function(j){return {status:r.status,json:j}})}).then(function(r){' +
-        'if(r.status===200&&r.json.ok){' +
-        'if(r.json.totpRequired){e.textContent="该账号已启用两步验证，请输入验证器中的 6 位动态码后再次登录";b.disabled=false;t.focus();return}' +
-        'location.href=okPath(r.json.redirect)?r.json.redirect:(okPath(next)?next:"/");return}' +
-        'e.textContent=r.json.error||("登录失败 ("+r.status+")");b.disabled=false})' +
-        '.catch(function(){e.textContent="网络错误，请重试";b.disabled=false})})})()' +
+        'function okPath(v){return v&&v.charAt(0)==="/"&&v.indexOf("//")===-1&&v.indexOf(":")===-1}' +
+        'function done(j){location.href=okPath(j.redirect)?j.redirect:(okPath(next)?next:"/")}' +
+        'function busy(on){b.disabled=on;if(pk){pk.disabled=on}}' +
+        'function post(url,body){return fetch(url,{method:"POST",headers:{"content-type":"application/json"},' +
+        'body:JSON.stringify(body)}).then(function(r){return r.json().catch(function(){return {}})' +
+        '.then(function(j){return {status:r.status,json:j}})})}' +
+        'function fail(err){busy(false);e.textContent=(err&&err.message)?err.message:"已取消或该设备没有可用的通行密钥"}' +
+        // 通行密钥登录：先取选项（可发现凭据，不需要用户名），再提交断言。
+        // ticket 非空时表示「密码已通过、第二步用通行密钥」。
+        'function passkeyLogin(ticket,username){' +
+        'if(!window.SWA||typeof window.PublicKeyCredential==="undefined"){return Promise.reject(new Error("当前浏览器不支持通行密钥"))}' +
+        'return post("/auth/passkey/login/options",username?{username:username}:{}).then(function(r){' +
+        'if(r.status!==200||!r.json.ok){throw new Error(r.json.error||("无法开始通行密钥登录 ("+r.status+")"))}' +
+        'return window.SWA.startAuthentication({optionsJSON:r.json.options}).then(function(cred){' +
+        'var body={handle:r.json.handle,response:cred};' +
+        'if(ticket){body.ticket=ticket}' +
+        'if(username){body.username=username}' +
+        'return post("/auth/passkey/login",body)})})' +
+        '.then(function(r){' +
+        'if(r.status===200&&r.json.ok){done(r.json);return true}' +
+        'throw new Error(r.json.error||("通行密钥登录失败 ("+r.status+")"))})}' +
+        'function startPasskey(ticket,username){busy(true);e.textContent="";passkeyLogin(ticket,username).catch(fail)}' +
+        'function afterPassword(r){' +
+        'busy(false);' +
+        'if(r.status!==200||!r.json.ok){e.textContent=r.json.error||("登录失败 ("+r.status+")");return}' +
+        'if(r.json.totpRequired){e.textContent="该账号已启用两步验证，请输入验证器中的 6 位动态码后再次登录";t.focus();return}' +
+        // 密码已通过：第二步必须完成通行密钥验证，票据绑定本次登录
+        'if(r.json.passkeyRequired){e.textContent="该账号已开启两步验证，请使用通行密钥完成第二步验证…";' +
+        'startPasskey(r.json.ticket,document.getElementById("u").value);return}' +
+        'done(r.json)}' +
+        'document.getElementById("pe").addEventListener("click",function(){' +
+        'var on=p.type==="password";p.type=on?"text":"password";this.textContent=on?"🙈":"👁"});' +
+        'f.addEventListener("submit",function(ev){' +
+        'ev.preventDefault();busy(true);e.textContent="";' +
+        'post("/auth/login",{username:document.getElementById("u").value,password:p.value,totp:t.value})' +
+        '.then(afterPassword).catch(function(){busy(false);e.textContent="网络错误，请重试"})});' +
+        'if(pk){pk.addEventListener("click",function(){startPasskey(null,null)})}' +
+        '})()' +
         '</script></body></html>'
     }
 
@@ -1161,7 +1351,7 @@ export function apply(ctx: CordisContext): void {
         }
         try {
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-          res.end(loginPage())
+          res.end(loginPage(loginPasskeyUi(req)))
         } catch (err) { try { res.destroy() } catch (e) { /* ignore */ } }
         return
       }
@@ -1178,9 +1368,10 @@ export function apply(ctx: CordisContext): void {
         const hasPassword = password !== ''
         const hasTotp = totp !== ''
         const ip = clientIpOf(req)
-        // 两种登录方式：密码（可选 + TOTP 两步验证）或免密 TOTP
-        if (username === '' || (!hasPassword && !hasTotp)) {
-          sendJson(res, 400, { error: '请输入用户名和密码（或 TOTP 动态码）' })
+        // 密码路径只保留「用户名 + 密码」（可选第二步）：免密 TOTP 登录已在 0.6.4 移除，
+        // 免密入口统一收敛到通行密钥。
+        if (username === '' || !hasPassword) {
+          sendJson(res, 400, { error: '请输入用户名和密码' })
           return
         }
         const lock = state.fails.get(ip)
@@ -1190,16 +1381,20 @@ export function apply(ctx: CordisContext): void {
         }
         if (lock !== undefined && lock.until > 0 && lock.until <= Date.now()) state.fails.delete(ip)
         const rec = state.users.get(username)
-        // 2FA 强制 = 已绑定 TOTP 且用户显式开启两步验证开关
-        const twoFactorActive = rec !== undefined && rec.totpEnabled === true && rec.twoFactor === true
-        if (hasPassword) {
-          // ============ 密码登录（启用 2FA 时需第二步 TOTP） ============
-          if (rec === undefined || !verifyPassword(rec, password)) {
-            recordFail(ip)
-            sendJson(res, 401, { error: '用户名或密码错误' })
-            return
-          }
-          if (twoFactorActive) {
+        if (rec === undefined || !verifyPassword(rec, password)) {
+          recordFail(ip)
+          sendJson(res, 401, { error: '用户名或密码错误' })
+          return
+        }
+        // ============ 登录矩阵（0.6.4） ============
+        //   twoFactor 关闭                  → 用户名 + 密码
+        //   twoFactor 开启且 TOTP 已绑定      → 用户名 + 密码 + TOTP
+        //   twoFactor 开启且只绑定了通行密钥   → 用户名 + 密码 + 通行密钥（第二步见 /auth/passkey/login）
+        //   任意状态                        → 通行密钥登录（可不填用户名/密码，见 /auth/passkey/*）
+        const factors = factorState(rec)
+        const twoFactorActive = factors.twoFactor
+        if (twoFactorActive) {
+          if (factors.totpBound) {
             if (!hasTotp) {
               // 密码正确，要求第二步 TOTP（不签发会话）
               sendJson(res, 200, { ok: true, totpRequired: true })
@@ -1210,26 +1405,13 @@ export function apply(ctx: CordisContext): void {
               sendJson(res, 403, { error: '验证码不正确' })
               return
             }
-          }
-          // 未开启 2FA：密码即登录（可同时绑定 TOTP 用于免密，但不强制第二步）
-        } else {
-          // ============ 免密 TOTP 登录 ============
-          if (rec === undefined) {
-            recordFail(ip)
-            sendJson(res, 401, { error: '用户名或密码错误' })
-            return
-          }
-          if (rec.totpEnabled !== true || typeof rec.totpSecret !== 'string') {
-            sendJson(res, 400, { error: '该账号未启用 TOTP' })
-            return
-          }
-          if (rec.twoFactor === true) {
-            sendJson(res, 403, { error: '该账号已启用两步验证，请使用密码和动态码登录' })
-            return
-          }
-          if (!totpVerifyCode(rec.totpSecret, totp)) {
-            recordFail(ip)
-            sendJson(res, 403, { error: '验证码不正确' })
+          } else if (factors.passkeyCount === 0) {
+            // 记录被外部改坏（2FA 开启却没有任何因子）：修复记录后按密码登录，避免账号彻底锁死。
+            await storeMutate(username, (p) => ({ ...p, twoFactor: false, updatedAt: Date.now() }))
+            audit('twoFactorSelfHeal', username, username, { reason: 'no-factor' })
+          } else {
+            // 第二步是通行密钥：密码不能单独放行，必须再完成一次通行密钥验证。
+            sendJson(res, 200, { ok: true, passkeyRequired: true, ticket: issueTicket('login', username, ip) })
             return
           }
         }
@@ -1240,6 +1422,482 @@ export function apply(ctx: CordisContext): void {
         return
       }
       sendJson(res, 405, { error: 'method not allowed' })
+    }
+
+    // ============ 通行密钥（Passkey / WebAuthn，0.6.4） ============
+    // 两条通路：
+    // - 登录（匿名）：POST /auth/passkey/login/options → POST /auth/passkey/login；
+    //   免用户名即可登录（可发现凭据）。已开启 2FA 且只绑定通行密钥的账号，
+    //   密码登录的第二步也走同一端点（携带一次性票据）。
+    // - 管理（需登录）：/auth/rpc/passkey*；所有写操作必须先经 passkeyStepUp
+    //   完成一次高强度校验（密码 + TOTP，或密码 + 已有通行密钥）取得一次性票据。
+    // 反锁死：任何因子移除都经 reconcileTwoFactor，且不允许删掉账号的最后一个因子。
+
+    /**
+     * 当前请求的通行密钥环境。返回 issue 表示该地址无法使用通行密钥
+     * （IP 字面量 / 明文 HTTP 非回环），响应里给出可操作提示。
+     */
+    function passkeyContext(req: IncomingMessage): { rp: PasskeyRelyingParty } | { issue: RelyingPartyIssue; error: string; suggestedHost?: string } {
+      const host = typeof req.headers.host === 'string' ? req.headers.host : ''
+      const assessment = assessRelyingParty({
+        host,
+        secure: isSecureRequest(req),
+        rpId: RP_ID_OVERRIDE,
+        origin: ORIGIN_OVERRIDE,
+        rpName: RP_NAME,
+      })
+      if (assessment.rp !== undefined) return { rp: assessment.rp }
+      const issue: RelyingPartyIssue = assessment.issue !== undefined ? assessment.issue : 'invalid-host'
+      const problem: { issue: RelyingPartyIssue; error: string; suggestedHost?: string } = {
+        issue,
+        error: relyingPartyIssueMessage(issue, assessment.suggestedHost),
+      }
+      if (assessment.suggestedHost !== undefined) problem.suggestedHost = assessment.suggestedHost
+      return problem
+    }
+
+    /** 按凭据 id 反查账号（可发现凭据登录：用户不输入用户名）。 */
+    function findPasskeyOwner(credentialId: string): { username: string; record: UserRecord; passkey: StoredPasskey } | undefined {
+      if (credentialId === '') return undefined
+      for (const [username, record] of state.users) {
+        const passkey = sanitizePasskeys(record.passkeys).find((item) => item.id === credentialId)
+        if (passkey !== undefined) return { username, record, passkey }
+      }
+      return undefined
+    }
+
+    /** 登录成功后落盘计数器与最近使用时间（计数器回退用于检出被复制的认证器）。 */
+    async function touchPasskey(username: string, credentialId: string, outcome: { newCounter: number; deviceType: string; backedUp: boolean }): Promise<void> {
+      await storeMutate(username, (p) => {
+        const list = sanitizePasskeys(p.passkeys)
+        const index = list.findIndex((item) => item.id === credentialId)
+        if (index === -1) return p
+        const entry: StoredPasskey = {
+          ...list[index],
+          counter: outcome.newCounter,
+          lastUsedAt: Date.now(),
+          deviceType: outcome.deviceType === 'multiDevice' ? 'multiDevice' : 'singleDevice',
+          backedUp: outcome.backedUp,
+        }
+        const next = list.slice()
+        next[index] = entry
+        return { ...p, passkeys: next, updatedAt: Date.now() }
+      })
+    }
+
+    /** 读取请求体（与登录/注册一致的解析与限额）。 */
+    async function readJsonBody(req: IncomingMessage, res: ServerResponse): Promise<Record<string, any> | null> {
+      try {
+        const raw = await readBody(req, MAX_BODY_BYTES)
+        const parsed = raw.trim() === '' ? {} : JSON.parse(raw)
+        return parsed !== null && typeof parsed === 'object' ? parsed : {}
+      } catch (err) {
+        sendJson(res, 400, { error: '请求体格式错误' })
+        return null
+      }
+    }
+
+    // ---- 登录页脚本（构建产物按需提供，进程内缓存 + ETag） ----
+
+    let passkeyBrowserScript: string | null = null
+    let passkeyBrowserEtag = ''
+
+    /**
+     * 提供登录页使用的 WebAuthn 浏览器端脚本（lib/passkey-browser.js，由 build/client.mjs 产出）。
+     * 内容是 @simplewebauthn/browser 的 IIFE bundle，不含任何秘密，可安全缓存。
+     */
+    async function handlePasskeyBrowserScript(req: IncomingMessage, res: ServerResponse): Promise<void> {
+      if (req.method !== 'GET' && req.method !== 'HEAD') { sendJson(res, 405, { error: 'method not allowed' }); return }
+      if (passkeyBrowserScript === null) {
+        try {
+          const { readFile } = await import('node:fs/promises')
+          const source = await readFile(new URL('./passkey-browser.js', import.meta.url), 'utf8')
+          passkeyBrowserScript = source
+          passkeyBrowserEtag = '"' + toHex(sha256(new TextEncoder().encode(source))).slice(0, 32) + '"'
+        } catch (err) {
+          console.error('[dsh-ui-auth] 读取通行密钥浏览器端脚本失败: ' + String(err))
+        }
+      }
+      if (passkeyBrowserScript === null) { sendJson(res, 500, { error: '通行密钥脚本不可用' }); return }
+      if (req.headers['if-none-match'] === passkeyBrowserEtag) {
+        res.writeHead(304, { etag: passkeyBrowserEtag, 'cache-control': 'no-cache' })
+        res.end()
+        return
+      }
+      const bytes = Buffer.from(passkeyBrowserScript, 'utf8')
+      res.writeHead(200, {
+        'content-type': 'application/javascript; charset=utf-8',
+        'content-length': bytes.length,
+        'cache-control': 'no-cache',
+        etag: passkeyBrowserEtag,
+        'x-content-type-options': 'nosniff',
+      })
+      if (req.method === 'HEAD') { res.end(); return }
+      res.end(bytes)
+    }
+
+    // ---- 通行密钥登录（匿名） ----
+
+    async function handlePasskeyLoginOptions(req: IncomingMessage, res: ServerResponse): Promise<void> {
+      if (req.method !== 'POST') { sendJson(res, 405, { error: 'method not allowed' }); return }
+      if (!state.ready) { sendJson(res, 503, { error: '服务初始化中，请稍后重试' }); return }
+      const body = await readJsonBody(req, res)
+      if (body === null) return
+      const ip = clientIpOf(req)
+      const locked = state.fails.get(ip)
+      if (locked !== undefined && locked.until > Date.now()) {
+        sendJson(res, 429, { error: '尝试次数过多，请 ' + Math.ceil((locked.until - Date.now()) / 1000) + ' 秒后再试' })
+        return
+      }
+      const context = passkeyContext(req)
+      if (!('rp' in context)) { sendJson(res, 409, { ok: false, ...context }); return }
+      const username = typeof body.username === 'string' ? body.username.trim() : ''
+      const known = username === '' ? undefined : state.users.get(username)
+      // 已知账号有通行密钥时限定候选凭据（系统选择器更干净）；否则走可发现凭据，
+      // 不在这一步泄露账号是否存在。
+      const allow = known === undefined ? [] : sanitizePasskeys(known.passkeys)
+      const result = await authenticationOptions({
+        rp: context.rp,
+        store: passkeyChallenges,
+        ...(username !== '' ? { username } : {}),
+        ...(allow.length > 0 ? { allowCredentials: allow } : {}),
+      })
+      if (!result.ok) { sendJson(res, 500, { error: result.error }); return }
+      sendJson(res, 200, {
+        ok: true,
+        options: result.value.options,
+        handle: result.value.handle,
+        rpId: context.rp.rpId,
+      })
+    }
+
+    async function handlePasskeyLogin(req: IncomingMessage, res: ServerResponse): Promise<void> {
+      if (req.method !== 'POST') { sendJson(res, 405, { error: 'method not allowed' }); return }
+      if (!state.ready) { sendJson(res, 503, { error: '服务初始化中，请稍后重试' }); return }
+      const body = await readJsonBody(req, res)
+      if (body === null) return
+      const ip = clientIpOf(req)
+      const locked = state.fails.get(ip)
+      if (locked !== undefined && locked.until > Date.now()) {
+        sendJson(res, 429, { error: '尝试次数过多，请 ' + Math.ceil((locked.until - Date.now()) / 1000) + ' 秒后再试' })
+        return
+      }
+      const context = passkeyContext(req)
+      if (!('rp' in context)) { sendJson(res, 409, { ok: false, ...context }); return }
+      const q = typeof req.url === 'string' ? req.url.split('?').slice(1).join('?') : ''
+
+      // 1) 定位目标账号：票据（密码登录第二步）→ 用户名 → 可发现凭据反查
+      const ticketHandle = typeof body.ticket === 'string' ? body.ticket : ''
+      let username = typeof body.username === 'string' ? body.username.trim() : ''
+      if (ticketHandle !== '') {
+        const ticket = state.tickets.get(ticketHandle)
+        if (ticket === undefined || ticket.purpose !== 'login' || ticket.expiresAt <= Date.now() || ticket.ip !== ip) {
+          sendJson(res, 401, { error: '本次登录已失效，请重新输入密码' })
+          return
+        }
+        // 单次使用：无论验证结果如何都不再复用该票据
+        state.tickets.delete(ticketHandle)
+        username = ticket.username
+      }
+      let record = username === '' ? undefined : state.users.get(username)
+      if (username !== '' && (record === undefined || sanitizePasskeys(record.passkeys).length === 0)) {
+        recordFail(ip)
+        audit('passkeyLoginFail', username, username, { reason: 'no-passkey' })
+        sendJson(res, 401, { error: '该账号没有可用的通行密钥' })
+        return
+      }
+      let candidates = record === undefined ? [] : sanitizePasskeys(record.passkeys)
+      if (record === undefined) {
+        const credentialId = responseCredentialId(body.response)
+        const owner = credentialId === undefined ? undefined : findPasskeyOwner(credentialId)
+        if (owner === undefined) {
+          recordFail(ip)
+          audit('passkeyLoginFail', undefined, undefined, { reason: 'unknown-credential' })
+          sendJson(res, 401, { error: '未找到可用的通行密钥' })
+          return
+        }
+        record = owner.record
+        username = owner.username
+        candidates = sanitizePasskeys(record.passkeys)
+      }
+
+      // 2) 命中候选凭据（限定账号时可发现凭据也必须属于该账号）
+      const credentialId = responseCredentialId(body.response)
+      const passkey = candidates.find((item) => item.id === credentialId)
+      if (passkey === undefined) {
+        recordFail(ip)
+        audit('passkeyLoginFail', username, username, { reason: 'credential-mismatch' })
+        sendJson(res, 401, { error: '通行密钥与账号不匹配' })
+        return
+      }
+
+      // 3) 校验断言（签名、挑战、来源、rpId、用户验证、计数器）
+      const verified = await finishAuthentication({
+        rp: context.rp,
+        store: passkeyChallenges,
+        handle: body.handle,
+        response: body.response,
+        credential: passkey,
+        ...(username !== '' ? { expectedUsername: username } : {}),
+      })
+      if (!verified.ok) {
+        recordFail(ip)
+        audit('passkeyLoginFail', username, username, { reason: 'verify', detail: verified.error, credential: passkey.id.slice(0, 8) })
+        sendJson(res, 403, { error: verified.error })
+        return
+      }
+
+      state.fails.delete(ip)
+      await touchPasskey(username, passkey.id, verified.value)
+      const token = createSession(username)
+      setAuthCookie(res, token, isSecureRequest(req))
+      audit('passkeyLogin', username, username, {
+        credential: passkey.id.slice(0, 8),
+        label: passkey.label,
+        deviceType: verified.value.deviceType,
+        backedUp: verified.value.backedUp,
+        secondFactor: ticketHandle !== '',
+      })
+      sendJson(res, 200, { ok: true, redirect: safeNext(q) })
+    }
+
+    // ---- 通行密钥管理（需登录 + 一次性票据） ----
+
+    interface PasskeyRpcContext {
+      req: IncomingMessage
+      who: string
+      me: UserRecord
+      args: Record<string, any>
+      ip: string
+      json: (status: number, body: Record<string, unknown>) => void
+      requireAdmin: () => boolean
+      audit: (action: string, actor: string | undefined, target: string | undefined, extra?: Record<string, unknown>) => void
+    }
+
+    /**
+     * 处理全部通行密钥管理方法；返回 true 表示已处理（含错误响应）。
+     * 所有会改变账号状态的操作都要求一次性票据：即便会话被窃取，攻击者也无法
+     * 仅凭会话添加/删除通行密钥。
+     */
+    async function passkeyRpc(method: string, c: PasskeyRpcContext): Promise<boolean> {
+      const factors = factorState(c.me)
+      const context = passkeyContext(c.req)
+      const contextError = (): boolean => {
+        if ('rp' in context) return false
+        c.json(409, { ok: false, ...context })
+        return true
+      }
+
+      if (method === 'passkeyList') {
+        c.json(200, {
+          ok: true,
+          passkeys: sanitizePasskeys(c.me.passkeys).map(summarizePasskey),
+          twoFactor: factors.twoFactor,
+          totpBound: factors.totpBound,
+          max: MAX_PASSKEYS,
+          rp: 'rp' in context
+            ? { supported: true, rpId: context.rp.rpId, origin: context.rp.origin }
+            : { supported: false, issue: context.issue, error: context.error, ...(context.suggestedHost !== undefined ? { suggestedHost: context.suggestedHost } : {}) },
+        })
+        return true
+      }
+
+      if (method === 'passkeyStepUp') {
+        // 需要哪种校验：2FA+TOTP → 密码+TOTP；2FA+仅通行密钥 → 密码+通行密钥；否则密码
+        const password = typeof c.args.password === 'string' ? c.args.password : ''
+        const totp = typeof c.args.totp === 'string' ? c.args.totp.trim() : ''
+        const needPasskey = factors.twoFactor && !factors.totpBound
+        if (password === '' || !verifyPassword(c.me, password)) {
+          recordFail(c.ip)
+          c.json(403, { error: '密码不正确' })
+          return true
+        }
+        if (factors.twoFactor && factors.totpBound) {
+          if (typeof c.me.totpSecret !== 'string' || !totpVerifyCode(c.me.totpSecret, totp)) {
+            recordFail(c.ip)
+            c.json(403, { error: '验证码不正确' })
+            return true
+          }
+        }
+        if (needPasskey) {
+          if (contextError()) return true
+          const list = sanitizePasskeys(c.me.passkeys)
+          if (list.length === 0) {
+            c.json(400, { error: '该账号没有可用的通行密钥，请改用其他验证方式' })
+            return true
+          }
+          // 第一段：尚未携带断言 → 返回断言选项
+          if (typeof c.args.handle !== 'string' || c.args.response === undefined) {
+            const options = await authenticationOptions({
+              rp: (context as { rp: PasskeyRelyingParty }).rp,
+              store: passkeyChallenges,
+              username: c.who,
+              allowCredentials: list,
+            })
+            if (!options.ok) { c.json(500, { error: options.error }); return true }
+            c.json(200, { ok: true, need: 'passkey', options: options.value.options, handle: options.value.handle })
+            return true
+          }
+          const passkey = list.find((item) => item.id === responseCredentialId(c.args.response))
+          if (passkey === undefined) {
+            c.json(401, { error: '通行密钥与账号不匹配' })
+            return true
+          }
+          const verified = await finishAuthentication({
+            rp: (context as { rp: PasskeyRelyingParty }).rp,
+            store: passkeyChallenges,
+            handle: c.args.handle,
+            response: c.args.response,
+            credential: passkey,
+            expectedUsername: c.who,
+          })
+          if (!verified.ok) {
+            recordFail(c.ip)
+            c.json(403, { error: verified.error })
+            return true
+          }
+          await touchPasskey(c.who, passkey.id, verified.value)
+        }
+        state.fails.delete(c.ip)
+        const mode = needPasskey ? 'password+passkey' : (factors.totpBound ? 'password+totp' : 'password')
+        c.audit('passkeyStepUp', c.who, c.who, { mode })
+        c.json(200, { ok: true, need: 'done', ticket: issueTicket('stepup', c.who, c.ip), mode })
+        return true
+      }
+
+      if (method === 'passkeyAddOptions') {
+        // 只校验票据（不消费）：注册挑战发出后，票据要在 passkeyAddVerify 中才消费。
+        const check = peekTicket(c.args.ticket, 'stepup', c.who, c.ip)
+        if (!check.ok) { c.json(403, { error: check.error }); return true }
+        if (contextError()) return true
+        const existing = sanitizePasskeys(c.me.passkeys)
+        if (existing.length >= MAX_PASSKEYS) {
+          c.json(400, { error: `每个账号最多绑定 ${MAX_PASSKEYS} 个通行密钥` })
+          return true
+        }
+        // user handle 稳定不变（可发现凭据按它索引），首次添加时生成并落盘
+        let userHandle = typeof c.me.webauthnUserHandle === 'string' ? c.me.webauthnUserHandle : ''
+        if (userHandle === '') {
+          userHandle = await newUserHandle()
+          const updated = await storeMutate(c.who, (p) => ({ ...p, webauthnUserHandle: userHandle }))
+          if (updated === undefined) { c.json(500, { error: '账号数据写入失败，请重试' }); return true }
+        }
+        const preferred = c.args.preferred === 'localDevice' || c.args.preferred === 'remoteDevice' || c.args.preferred === 'securityKey'
+          ? c.args.preferred
+          : undefined
+        const result = await registrationOptions({
+          rp: (context as { rp: PasskeyRelyingParty }).rp,
+          store: passkeyChallenges,
+          username: c.who,
+          displayName: typeof c.me.displayName === 'string' && c.me.displayName !== '' ? c.me.displayName : c.who,
+          userHandle,
+          existing,
+          ...(preferred !== undefined ? { preferred } : {}),
+        })
+        if (!result.ok) { c.json(400, { error: result.error }); return true }
+        c.json(200, { ok: true, options: result.value.options, handle: result.value.handle })
+        return true
+      }
+
+      if (method === 'passkeyAddVerify') {
+        // 先确认当前地址可用，再消费票据（避免在不可用地址上白白烧掉验证结果）
+        if (contextError()) return true
+        const check = consumeTicket(c.args.ticket, 'stepup', c.who, c.ip)
+        if (!check.ok) { c.json(403, { error: check.error }); return true }
+        const label = normalizePasskeyLabel(c.args.label, '通行密钥 ' + (sanitizePasskeys(c.me.passkeys).length + 1))
+        const result = await finishRegistration({
+          rp: (context as { rp: PasskeyRelyingParty }).rp,
+          store: passkeyChallenges,
+          handle: c.args.handle,
+          response: c.args.response,
+          label,
+        })
+        if (!result.ok) { c.json(400, { error: result.error }); return true }
+        const created = result.value
+        let rejected: string | null = null
+        const updated = await storeMutate(c.who, (p) => {
+          const list = sanitizePasskeys(p.passkeys)
+          if (list.some((item) => item.id === created.id)) { rejected = '该通行密钥已绑定'; return undefined }
+          if (list.length >= MAX_PASSKEYS) { rejected = `每个账号最多绑定 ${MAX_PASSKEYS} 个通行密钥`; return undefined }
+          return { ...p, passkeys: [...list, created], updatedAt: Date.now() }
+        })
+        if (updated === undefined) {
+          c.json(409, { error: rejected !== null ? rejected : '账号数据写入失败，请重试' })
+          return true
+        }
+        c.audit('passkeyAdd', c.who, c.who, {
+          credential: created.id.slice(0, 8),
+          label: created.label,
+          deviceType: created.deviceType,
+          backedUp: created.backedUp,
+          aaguid: created.aaguid,
+          count: sanitizePasskeys(updated.passkeys).length,
+        })
+        c.json(200, { ok: true, passkey: summarizePasskey(created) })
+        return true
+      }
+
+      if (method === 'passkeyRename') {
+        const check = consumeTicket(c.args.ticket, 'stepup', c.who, c.ip)
+        if (!check.ok) { c.json(403, { error: check.error }); return true }
+        const id = typeof c.args.id === 'string' ? c.args.id : ''
+        const label = normalizePasskeyLabel(c.args.label, '')
+        if (label === '') { c.json(400, { error: '请输入名称' }); return true }
+        if (!sanitizePasskeys(c.me.passkeys).some((item) => item.id === id)) { c.json(404, { error: '通行密钥不存在' }); return true }
+        await storeMutate(c.who, (p) => ({
+          ...p,
+          passkeys: sanitizePasskeys(p.passkeys).map((item) => item.id === id ? { ...item, label } : item),
+          updatedAt: Date.now(),
+        }))
+        c.audit('passkeyRename', c.who, c.who, { credential: id.slice(0, 8), label })
+        c.json(200, { ok: true })
+        return true
+      }
+
+      if (method === 'passkeyRemove') {
+        const check = consumeTicket(c.args.ticket, 'stepup', c.who, c.ip)
+        if (!check.ok) { c.json(403, { error: check.error }); return true }
+        const id = typeof c.args.id === 'string' ? c.args.id : ''
+        const list = sanitizePasskeys(c.me.passkeys)
+        if (!list.some((item) => item.id === id)) { c.json(404, { error: '通行密钥不存在' }); return true }
+        // 反锁死：2FA 开启且未绑定 TOTP 时，最后一个通行密钥不能被删除
+        if (list.length === 1 && factors.twoFactor && !factors.totpBound) {
+          c.json(400, { error: '该账号已开启两步验证且仅剩这一个通行密钥：请先绑定 TOTP 令牌，或先关闭两步验证' })
+          return true
+        }
+        const remaining = list.filter((item) => item.id !== id)
+        const updated = await storeMutate(c.who, (p) => ({
+          ...p,
+          passkeys: remaining,
+          twoFactor: reconcileTwoFactor({ ...p, passkeys: remaining }),
+          updatedAt: Date.now(),
+        }))
+        c.audit('passkeyRemove', c.who, c.who, {
+          credential: id.slice(0, 8),
+          count: updated === undefined ? remaining.length : sanitizePasskeys(updated.passkeys).length,
+          twoFactor: updated !== undefined && updated.twoFactor === true,
+        })
+        c.json(200, { ok: true, twoFactor: updated !== undefined && updated.twoFactor === true })
+        return true
+      }
+
+      if (method === 'passkeyReset') {
+        // 管理员救援：清空某个账号的全部通行密钥（用于设备丢失且无其他因素）
+        if (!c.requireAdmin()) return true
+        const targetName = typeof c.args.username === 'string' ? c.args.username.trim() : ''
+        const target = state.users.get(targetName)
+        if (target === undefined) { c.json(404, { error: '用户不存在' }); return true }
+        const updated = await storeMutate(targetName, (p) => {
+          const cleared = { ...p, passkeys: [] as StoredPasskey[] }
+          return { ...cleared, twoFactor: reconcileTwoFactor(cleared), updatedAt: Date.now() }
+        })
+        const removed = sanitizePasskeys(target.passkeys).length
+        c.audit('passkeyReset', c.who, targetName, { removed, twoFactor: updated !== undefined && updated.twoFactor === true })
+        c.json(200, { ok: true, removed, twoFactor: updated !== undefined && updated.twoFactor === true })
+        return true
+      }
+
+      return false
     }
 
     // ============ 注册（0.5.0：邮箱 + 用户名 + 密码 + 邀请码） ============
@@ -1504,6 +2162,9 @@ export function apply(ctx: CordisContext): void {
         sendJson(res, 200, { authenticated: true, me: publicUser(me) })
         return
       }
+      if (pathname === '/auth/passkey/browser.js') { await handlePasskeyBrowserScript(req, res); return }
+      if (pathname === '/auth/passkey/login/options') { await handlePasskeyLoginOptions(req, res); return }
+      if (pathname === '/auth/passkey/login') { await handlePasskeyLogin(req, res); return }
       if (pathname.startsWith('/auth/rpc/')) {
         if (req.method !== 'POST') { sendJson(res, 405, { error: 'method not allowed' }); return }
         const method = pathname.slice('/auth/rpc/'.length)
@@ -1703,7 +2364,12 @@ export function apply(ctx: CordisContext): void {
         }
         case 'totpSet2fa': {
           const enabled = args.enabled === true
-          if (enabled && me.totpEnabled !== true) { sendJson(res, 400, { error: '请先绑定并启用 TOTP 令牌' }); return }
+          const factors = factorState(me)
+          // 反锁死：开启 2FA 前必须至少有一种验证因子（TOTP 或通行密钥）。
+          if (enabled && !factors.hasFactor) {
+            sendJson(res, 400, { error: '请先绑定 TOTP 令牌或添加通行密钥，再开启两步验证' })
+            return
+          }
           await storeMutate(who, (p) => ({ ...p, twoFactor: enabled }))
           audit('totpSet2fa', who, who, { enabled })
           sendJson(res, 200, { ok: true, twoFactor: enabled })
@@ -1744,23 +2410,48 @@ export function apply(ctx: CordisContext): void {
             if (!requireAdmin()) return
             const target = state.users.get(targetName)
             if (target === undefined) { sendJson(res, 404, { error: '用户不存在' }); return }
-            await storeMutate(targetName, (p) => ({ ...p, totpSecret: undefined, totpEnabled: false, twoFactor: false }))
-            audit('totpRemove', who, targetName, { byAdmin: true })
-            sendJson(res, 200, { ok: true })
+            const withoutTotp = { ...target, totpSecret: undefined, totpEnabled: false }
+            // 仍绑定通行密钥时保留 2FA（第二步改走通行密钥）；否则关闭，避免账号锁死。
+            const keepTwoFactor = reconcileTwoFactor(withoutTotp)
+            await storeMutate(targetName, (p) => ({ ...p, totpSecret: undefined, totpEnabled: false, twoFactor: keepTwoFactor }))
+            audit('totpRemove', who, targetName, { byAdmin: true, twoFactor: keepTwoFactor })
+            sendJson(res, 200, { ok: true, twoFactor: keepTwoFactor })
             return
           }
           if (typeof me.totpSecret !== 'string' || me.totpSecret === '') { sendJson(res, 400, { error: '未启用 TOTP' }); return }
           const code = typeof args.code === 'string' ? args.code.trim() : ''
           if (!totpVerifyCode(me.totpSecret, code)) { sendJson(res, 403, { error: '验证码不正确' }); return }
-          await storeMutate(who, (p) => ({ ...p, totpSecret: undefined, totpEnabled: false, twoFactor: false }))
-          audit('totpRemove', who, who)
-          sendJson(res, 200, { ok: true })
+          const withoutTotp = { ...me, totpSecret: undefined, totpEnabled: false }
+          const keepTwoFactor = reconcileTwoFactor(withoutTotp)
+          await storeMutate(who, (p) => ({ ...p, totpSecret: undefined, totpEnabled: false, twoFactor: keepTwoFactor }))
+          audit('totpRemove', who, who, { twoFactor: keepTwoFactor })
+          sendJson(res, 200, { ok: true, twoFactor: keepTwoFactor })
           return
         }
         case 'totpIgnore': {
           const ignore = args.ignore === true
           await storeMutate(who, (p) => ({ ...p, totpIgnore: ignore }))
           sendJson(res, 200, { ok: true, ignore })
+          return
+        }
+        case 'passkeyList':
+        case 'passkeyStepUp':
+        case 'passkeyAddOptions':
+        case 'passkeyAddVerify':
+        case 'passkeyRename':
+        case 'passkeyRemove':
+        case 'passkeyReset': {
+          const handled = await passkeyRpc(method, {
+            req,
+            who,
+            me,
+            args,
+            ip: clientIpOf(req),
+            json: (status, payload) => sendJson(res, status, payload),
+            requireAdmin,
+            audit,
+          })
+          if (!handled) sendJson(res, 404, { error: '未知方法' })
           return
         }
         default:

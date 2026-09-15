@@ -26,6 +26,8 @@
 			email?: string | null
 			totpEnabled?: boolean
 			totpIgnore?: boolean
+			twoFactor?: boolean
+			passkeyCount?: number
 		}
 		/** 用户管理表格的一行（`listUsers`）。 */
 		interface AuthUser {
@@ -33,6 +35,64 @@
 			role: string
 			displayName?: string | null
 			email?: string | null
+			passkeyCount?: number
+		}
+		/** 一个已绑定的通行密钥（`passkeyList`；服务端不下发公钥）。 */
+		interface PasskeySummary {
+			id: string
+			label: string
+			createdAt: number
+			lastUsedAt?: number
+			deviceType?: string
+			backedUp?: boolean
+			transports?: string[]
+		}
+		/** 通行密钥环境（`passkeyList` 的 `rp`）：地址不可用时给出原因与建议地址。 */
+		interface PasskeyRp {
+			supported: boolean
+			rpId?: string
+			origin?: string
+			issue?: string
+			error?: string
+			suggestedHost?: string
+		}
+		/** `passkeyList` 应答。 */
+		interface PasskeyListResult {
+			passkeys?: PasskeySummary[]
+			twoFactor?: boolean
+			totpBound?: boolean
+			max?: number
+			rp?: PasskeyRp
+		}
+		/** `passkeyStepUp` 应答：`need === 'passkey'` 表示还差一次通行密钥断言。 */
+		interface PasskeyStepUpResult {
+			need?: string
+			ticket?: string
+			mode?: string
+			options?: unknown
+			handle?: string
+		}
+		/** 通行密钥卡片状态（`passkeyList` 的本地视图）。 */
+		interface PasskeyState {
+			loaded: boolean
+			list: PasskeySummary[]
+			twoFactor: boolean
+			totpBound: boolean
+			max: number
+			rp: PasskeyRp | null
+		}
+		/** 二次验证弹窗状态（添加/重命名/删除通行密钥前的强制确认）。 */
+		interface StepUpState {
+			open: boolean
+			action: string
+			id: string
+			/** 注册时提交给服务端的设备名（添加/重命名共用）。 */
+			label: string
+			preferred: string
+			need: string
+			ticket: string
+			busy: boolean
+			error: string
 		}
 		/** 邀请码表格的一行（`inviteList`）。 */
 		interface InviteRecord {
@@ -112,6 +172,10 @@
 
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 		var React = require("react");
+		// 成熟社区库 @simplewebauthn/browser：注册/登录仪式全部交给它（base64url、
+		// clientDataJSON、authenticatorData 等协议细节不自行实现）。与登录页共用的
+		// lib/passkey-browser.js 是同一份依赖，行为一致。
+		var SWA = require("@simplewebauthn/browser");
 
 		// ============ 样式（手动注入 <style>，与动态运行时的 styles.insert 等价） ============
 		var AUTH_CSS = [
@@ -220,6 +284,17 @@
 			var tQrUrlS = _s(''), tQrUrl = tQrUrlS[0], setTQrUrl = tQrUrlS[1]
 			var tCodeS = _s(''), tCode = tCodeS[0], setTCode = tCodeS[1]
 			var tRmCodeS = _s(''), tRmCode = tRmCodeS[0], setTRmCode = tRmCodeS[1]
+			// —— 通行密钥（Passkey）——
+			var pkS = _s({ loaded: false, list: [] as PasskeySummary[], twoFactor: false, totpBound: false, max: 20, rp: null as PasskeyRp | null })
+			var pk = pkS[0] as PasskeyState
+			var setPk = pkS[1] as (next: PasskeyState | ((prev: PasskeyState) => PasskeyState)) => void
+			var pkNameS = _s(''), pkName = pkNameS[0], setPkName = pkNameS[1]
+			// 二次验证弹窗：任何会改变账号因子的操作（添加/重命名/删除通行密钥）都要先过它
+			var suS = _s({ open: false, action: '', id: '', preferred: '', need: '', ticket: '', busy: false, error: '' })
+			var su = suS[0] as StepUpState
+			var setSu = suS[1] as (next: StepUpState | ((prev: StepUpState) => StepUpState)) => void
+			var suPwS = _s(''), suPw = suPwS[0], setSuPw = suPwS[1]
+			var suCodeS = _s(''), suCode = suCodeS[0], setSuCode = suCodeS[1]
 
 			var isAdmin = me !== null && me.role === 'admin'
 
@@ -285,6 +360,24 @@
 				return function () { cancelled = true }
 			}, [me === null ? null : me.username])
 
+			_e(function () {
+				var cancelled = false
+				rpc('passkeyList', {}).then(function (j: PasskeyListResult) {
+					if (cancelled) return
+					setPk({
+						loaded: true,
+						list: j.passkeys || [],
+						twoFactor: j.twoFactor === true,
+						totpBound: j.totpBound === true,
+						max: typeof j.max === 'number' ? j.max : 20,
+						rp: j.rp || null,
+					})
+				}).catch(function (e: CodedError) {
+					if (e.code !== 'session-expired' && !cancelled) setErr(e.message)
+				})
+				return function () { cancelled = true }
+			}, [me === null ? null : me.username])
+
 			function refreshTotp() {
 				rpc('totpStatus', {}).then(function (j: TotpStatusResult) {
 					setTotp({ enabled: j.totp.enabled === true, twoFactor: j.totp.twoFactor === true, ignore: j.totp.ignore === true })
@@ -293,7 +386,12 @@
 			}
 
 			function toggle2fa() {
-				run(function () { return rpc('totpSet2fa', { enabled: !totp.twoFactor }).then(refreshTotp) }, totp.twoFactor ? '已关闭两步验证（密码或动态码任选其一登录）' : '已启用两步验证（登录需密码 + 动态码）')
+				var turningOn = totp.twoFactor !== true
+				var onMsg = totp.enabled
+					? '已启用两步验证（登录需密码 + 动态码）'
+					: '已启用两步验证（登录需密码 + 通行密钥）'
+				run(function () { return rpc('totpSet2fa', { enabled: turningOn }).then(function () { refreshTotp(); refreshPk() }) },
+					turningOn ? onMsg : '已关闭两步验证（登录仅需密码，通行密钥仍可直接登录）')
 			}
 
 			function genTotp() {
@@ -311,13 +409,143 @@
 			}
 
 			function removeTotp() {
-				if (!window.confirm('确定移除 TOTP 令牌？移除后登录将不再需要动态验证码。')) return
+				var confirmText = pk.list.length > 0
+					? '确定移除 TOTP 令牌？移除后两步验证将由通行密钥完成（登录需「密码 + 通行密钥」）。'
+					: '确定移除 TOTP 令牌？移除后两步验证会自动关闭，登录仅需密码。'
+				if (!window.confirm(confirmText)) return
 				if (!/^\d{6}$/.test(tRmCode)) { setErr('请输入当前 6 位动态验证码以确认移除'); return }
-				run(function () { return rpc('totpRemove', { code: tRmCode }).then(function () { setTRmCode(''); refreshTotp() }) }, 'TOTP 已移除')
+				run(function () {
+					return rpc('totpRemove', { code: tRmCode }).then(function () { setTRmCode(''); refreshTotp(); refreshPk() })
+				}, 'TOTP 已移除')
 			}
 
 			function toggleIgnore() {
 				run(function () { return rpc('totpIgnore', { ignore: !totp.ignore }).then(refreshTotp) }, totp.ignore ? '已取消永久忽略' : '已永久忽略登录提醒')
+			}
+
+			// ============ 通行密钥（Passkey） ============
+			// 添加/重命名/删除都会改变账号的登录因子，因此每一步都要先通过二次验证
+			// （passkeyStepUp）：密码 + TOTP，或密码 + 一次已有通行密钥断言。
+
+			function suClosed() {
+				return { open: false, action: '', id: '', label: '', preferred: '', need: '', ticket: '', busy: false, error: '' }
+			}
+
+			function refreshPk() {
+				rpc('passkeyList', {}).then(function (j: PasskeyListResult) {
+					setPk({
+						loaded: true,
+						list: j.passkeys || [],
+						twoFactor: j.twoFactor === true,
+						totpBound: j.totpBound === true,
+						max: typeof j.max === 'number' ? j.max : 20,
+						rp: j.rp || null,
+					})
+				}).catch(function (e: CodedError) { if (e.code !== 'session-expired') setErr(e.message) })
+			}
+
+			function askStepUp(action: string, id: string, preferred: string, label: string) {
+				setSuPw(''); setSuCode(''); setErr(''); setMsg('')
+				setSu({ open: true, action: action, id: id, label: label, preferred: preferred, need: '', ticket: '', busy: false, error: '' })
+			}
+
+			function stepUpError(e: CodedError) {
+				setSu(function (s) { return { ...s, busy: false, error: (e && e.message) ? e.message : '验证未完成' } })
+			}
+
+			/** 二次验证通过后执行真正的动作（ticket 为服务端签发的一次性票据）。 */
+			function finishStepUp(ticket: string) {
+				var action = su.action
+				if (action === 'add') {
+					return rpc('passkeyAddOptions', { ticket: ticket, preferred: su.preferred }).then(function (j: any) {
+						if (typeof window.PublicKeyCredential === 'undefined') throw new Error('当前浏览器不支持通行密钥')
+						return SWA.startRegistration({ optionsJSON: j.options }).then(function (cred: unknown) {
+							return rpc('passkeyAddVerify', { ticket: ticket, handle: j.handle, response: cred, label: su.label })
+						})
+					}).then(function () {
+						setSu(suClosed()); setMsg('通行密钥已添加'); refreshPk(); refreshTotp()
+					}).catch(stepUpError)
+				}
+				if (action === 'rename') {
+					return rpc('passkeyRename', { ticket: ticket, id: su.id, label: su.label }).then(function () {
+						setSu(suClosed()); setMsg('通行密钥已重命名'); refreshPk()
+					}).catch(stepUpError)
+				}
+				if (action === 'remove') {
+					return rpc('passkeyRemove', { ticket: ticket, id: su.id }).then(function () {
+						setSu(suClosed()); setMsg('通行密钥已删除'); refreshPk(); refreshTotp()
+					}).catch(stepUpError)
+				}
+				setSu(suClosed())
+				return undefined
+			}
+
+			function submitStepUp() {
+				if (suPw === '') { setSu(function (s) { return { ...s, error: '请输入当前密码' } }); return }
+				var password = suPw
+				var code = suCode
+				var base: Record<string, unknown> = { password: password }
+				// 2FA 且已绑定 TOTP：第二步是动态码；仅绑定通行密钥时服务端会要求断言
+				if (pk.twoFactor && pk.totpBound) base.totp = code
+				setSu(function (s) { return { ...s, busy: true, error: '' } })
+				rpc('passkeyStepUp', base).then(function (j: PasskeyStepUpResult) {
+					if (j.need !== 'passkey') return finishStepUp(j.ticket || '')
+					if (typeof window.PublicKeyCredential === 'undefined') throw new Error('当前浏览器不支持通行密钥')
+					return SWA.startAuthentication({ optionsJSON: j.options }).then(function (cred: unknown) {
+						var again: Record<string, unknown> = { password: password, handle: j.handle, response: cred }
+						if (pk.twoFactor && pk.totpBound) again.totp = code
+						return rpc('passkeyStepUp', again).then(function (j2: PasskeyStepUpResult) { return finishStepUp(j2.ticket || '') })
+					})
+				}).catch(stepUpError)
+			}
+
+			function removePasskey(p: PasskeySummary) {
+				if (!window.confirm('删除通行密钥「' + p.label + '」？删除后该设备将无法再用它登录。')) return
+				askStepUp('remove', p.id, '', '')
+			}
+
+			function renamePasskey(p: PasskeySummary) {
+				var next = window.prompt('为这个通行密钥设置新名称：', p.label)
+				if (next === null) return
+				askStepUp('rename', p.id, '', next.slice(0, 40))
+			}
+
+			function passkeyLabel(p: PasskeySummary) {
+				var kind = p.deviceType === 'multiDevice' ? '可同步' : '仅此设备'
+				var used = typeof p.lastUsedAt === 'number' && p.lastUsedAt > 0
+					? new Date(p.lastUsedAt).toLocaleString()
+					: '未使用'
+				return kind + ' · 最近使用：' + used
+			}
+
+			/** 二次验证弹窗（改动登录因子前的强制确认）。 */
+			function renderStepUp() {
+				if (!su.open) return null
+				var needTotp = pk.twoFactor && pk.totpBound
+				var title = su.action === 'add' ? '添加通行密钥' : su.action === 'rename' ? '重命名通行密钥' : '删除通行密钥'
+				return React.createElement('div', {
+					style: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2147483000 },
+				},
+					React.createElement('div', { className: 'card', style: { width: 420, maxWidth: 'calc(100vw - 40px)', margin: 0 } },
+						React.createElement('h2', null, '确认身份 · ' + title),
+						React.createElement('div', { className: 'muted', style: { marginBottom: 4 } },
+							'通行密钥可以代替密码登录，因此改动前必须确认是你本人。'),
+						React.createElement('label', null, '当前密码'),
+						React.createElement('input', { type: 'password', value: suPw, onChange: function (e: ChangeEventLike) { setSuPw(e.target.value) }, autoComplete: 'current-password' }),
+						needTotp
+							? React.createElement('div', null,
+								React.createElement('label', null, '动态码（6 位）'),
+								React.createElement('input', { value: suCode, onChange: function (e: ChangeEventLike) { setSuCode(e.target.value) }, maxLength: 6, placeholder: '6 位动态码' }))
+							: null,
+						pk.twoFactor && !pk.totpBound
+							? React.createElement('div', { className: 'muted', style: { marginTop: 8 } },
+								'该账号的第二步验证是通行密钥：提交密码后会再要求你完成一次通行密钥验证。')
+							: null,
+						su.error !== '' ? React.createElement('div', { className: 'err' }, su.error) : null,
+						React.createElement('div', { className: 'row', style: { marginTop: 14 } },
+							React.createElement('button', { onClick: submitStepUp, disabled: su.busy }, su.busy ? '验证中…' : '确认'),
+							React.createElement('button', { className: 'ghost', onClick: function () { setSu(suClosed()); setSuPw(''); setSuCode('') }, disabled: su.busy }, '取消')),
+					))
 			}
 
 			function run(task: () => unknown, okMsg?: string) {
@@ -366,6 +594,11 @@
 				run(function () { return rpc('resetPassword', { username: u.username, newPassword: pw }).then(refreshUsers) }, '密码已重置')
 			}
 
+			function resetPasskeys(u: AuthUser) {
+				if (!window.confirm('清除用户「' + u.username + '」的全部通行密钥？该用户将无法再用通行密钥登录（用于设备丢失时的账号救援）。')) return
+				run(function () { return rpc('passkeyReset', { username: u.username }).then(refreshUsers) }, '该用户的通行密钥已清除')
+			}
+
 			function toggleRole(u: AuthUser) {
 				var next = u.role === 'admin' ? 'user' : 'admin'
 				if (!window.confirm('将「' + u.username + '」的角色改为「' + roleLabel(next) + '」？')) return
@@ -412,53 +645,133 @@
 					React.createElement('button', { onClick: changePassword, disabled: busy }, '修改密码')),
 			))
 
+			// TOTP 绑定流程（未绑定 TOTP 时展示；已绑定 TOTP 且只想要通行密钥的用户也仍可在此补绑）
+			var totpSetup = tSecret === ''
+				? React.createElement('div', null,
+					React.createElement('div', { className: 'muted', style: { marginBottom: 8 } },
+						'使用 Google Authenticator / Microsoft Authenticator 等应用，通过 otpauth 链接或手动输入密钥添加本账号；启用后每次登录输入 6 位动态码。'),
+					React.createElement('button', { onClick: genTotp, disabled: busy }, '生成 TOTP 密钥'),
+				)
+				: React.createElement('div', null,
+					React.createElement('label', null, '用验证器扫描二维码添加（Google Authenticator / Microsoft Authenticator 等）'),
+					tQrUrl !== ''
+						? React.createElement('img', { src: tQrUrl, alt: 'TOTP 二维码', style: { display: 'block', width: 200, height: 200, borderRadius: 8, background: '#fff', padding: 6, marginBottom: 6 } })
+						: null,
+					React.createElement('label', null, '密钥（无法扫码时手动输入）'),
+					React.createElement('code', { style: { display: 'block', padding: '10px', borderRadius: 7, background: 'var(--dsw-alias-bg-layer-1)', wordBreak: 'break-all' } }, tSecret),
+					React.createElement('label', null, 'otpauth 链接'),
+					React.createElement('code', { style: { display: 'block', padding: '10px', borderRadius: 7, background: 'var(--dsw-alias-bg-layer-1)', wordBreak: 'break-all', fontSize: 12 } }, tOtpAuth),
+					React.createElement('label', null, '输入验证器中的 6 位动态码以启用'),
+					React.createElement('input', { value: tCode, onChange: function (e: ChangeEventLike) { setTCode(e.target.value) }, placeholder: '6 位动态码', maxLength: 6 }),
+					React.createElement('div', { className: 'row', style: { marginTop: 12 } },
+						React.createElement('button', { onClick: enableTotp, disabled: busy }, '启用 TOTP'),
+						React.createElement('button', { className: 'ghost', onClick: function () { setTSecret(''); setTOtpAuth(''); setTQrUrl(''); setTCode('') }, disabled: busy }, '取消')),
+				)
+
+			// 两步验证开关：只要账号还有任一因子（TOTP 或通行密钥）就显示，
+			// 否则「先关闭两步验证」在只剩通行密钥的账号上会无从操作。
+			var hasFactor = totp.enabled || pk.list.length > 0
+			var factorText = totp.twoFactor
+				? (totp.enabled ? '已启用两步验证（登录需密码 + 动态码）' : '已启用两步验证（登录需密码 + 通行密钥）')
+				: '未启用两步验证（登录仅需密码）'
+
 			cards.push(React.createElement('div', { className: 'card', key: 'totp' },
-				React.createElement('h2', null, '两步验证（TOTP）'),
+				React.createElement('h2', null, totp.enabled ? '两步验证（TOTP）' : '两步验证'),
 				React.createElement('div', null,
 					totp.enabled
-						? React.createElement('span', { className: 'badge admin' }, '已启用')
-						: React.createElement('span', { className: 'badge user' }, '未绑定'),
+						? React.createElement('span', { className: 'badge admin' }, '已绑定 TOTP')
+						: React.createElement('span', { className: 'badge user' }, '未绑定 TOTP'),
+					pk.list.length > 0
+						? React.createElement('span', { className: 'badge admin' }, '通行密钥 ' + pk.list.length + ' 个')
+						: null,
 					totp.ignore ? React.createElement('span', { className: 'meta' }, '（已永久忽略登录提醒）') : null,
 				),
-				totp.enabled
+				hasFactor
 					? React.createElement('div', null,
 						React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 10, margin: '4px 0' } },
 							React.createElement('label', { className: 'switch' },
-								React.createElement('input', { type: 'checkbox', checked: totp.twoFactor, onChange: toggle2fa, disabled: busy }),
+								React.createElement('input', { type: 'checkbox', checked: totp.twoFactor === true, onChange: toggle2fa, disabled: busy }),
 								React.createElement('span', { className: 'track' }, React.createElement('span', { className: 'thumb' })),
 							),
-							React.createElement('label', { style: { cursor: 'pointer', margin: 0, color: 'var(--dsw-alias-label-secondary)' } },
-								totp.twoFactor ? '已启用两步验证（登录需密码 + 动态码）' : '未启用两步验证（密码或动态码任选其一登录）'),
+							React.createElement('label', { style: { cursor: 'pointer', margin: 0, color: 'var(--dsw-alias-label-secondary)' } }, factorText),
 						),
 						React.createElement('div', { className: 'muted', style: { marginBottom: 6 } },
-							'绑定 TOTP 后默认不强制两步验证，可随时用此开关开启/关闭。'),
-						React.createElement('label', null, '移除令牌需输入当前 6 位动态码'),
-						React.createElement('input', { value: tRmCode, onChange: function (e: ChangeEventLike) { setTRmCode(e.target.value) }, placeholder: '6 位动态码', maxLength: 6 }),
-						React.createElement('div', { className: 'row', style: { marginTop: 12 } },
-							React.createElement('button', { className: 'danger', onClick: removeTotp, disabled: busy }, '移除 TOTP'),
-							React.createElement('button', { className: 'ghost', onClick: toggleIgnore, disabled: busy }, totp.ignore ? '取消永久忽略' : '永久忽略登录提醒')),
+							totp.twoFactor
+								? '关闭后仅凭密码即可登录（通行密钥仍可直接登录）；开启状态下改动通行密钥需要先通过二次验证。'
+								: '开启后登录需要第二个因子：已绑定 TOTP 时用动态码，否则用通行密钥。'),
+						totp.enabled
+							? React.createElement('div', null,
+								React.createElement('label', null, '移除令牌需输入当前 6 位动态码'),
+								React.createElement('input', { value: tRmCode, onChange: function (e: ChangeEventLike) { setTRmCode(e.target.value) }, placeholder: '6 位动态码', maxLength: 6 }),
+								React.createElement('div', { className: 'row', style: { marginTop: 12 } },
+									React.createElement('button', { className: 'danger', onClick: removeTotp, disabled: busy }, '移除 TOTP'),
+									React.createElement('button', { className: 'ghost', onClick: toggleIgnore, disabled: busy }, totp.ignore ? '取消永久忽略' : '永久忽略登录提醒')))
+							: React.createElement('div', null,
+								React.createElement('div', { className: 'muted', style: { marginBottom: 8 } },
+									'当前账号没有 TOTP 令牌，两步验证由通行密钥完成。如需改用动态码，可在下方生成并绑定 TOTP。'),
+								totpSetup),
 					)
-					: (tSecret === ''
-						? React.createElement('div', null,
-							React.createElement('div', { className: 'muted', style: { marginBottom: 8 } },
-								'使用 Google Authenticator / Microsoft Authenticator 等应用，通过 otpauth 链接或手动输入密钥添加本账号；启用后每次登录输入 6 位动态码。'),
-							React.createElement('button', { onClick: genTotp, disabled: busy }, '生成 TOTP 密钥'),
-						)
-						: React.createElement('div', null,
-							React.createElement('label', null, '用验证器扫描二维码添加（Google Authenticator / Microsoft Authenticator 等）'),
-							tQrUrl !== ''
-								? React.createElement('img', { src: tQrUrl, alt: 'TOTP 二维码', style: { display: 'block', width: 200, height: 200, borderRadius: 8, background: '#fff', padding: 6, marginBottom: 6 } })
-								: null,
-							React.createElement('label', null, '密钥（无法扫码时手动输入）'),
-							React.createElement('code', { style: { display: 'block', padding: '10px', borderRadius: 7, background: 'var(--dsw-alias-bg-layer-1)', wordBreak: 'break-all' } }, tSecret),
-							React.createElement('label', null, 'otpauth 链接'),
-							React.createElement('code', { style: { display: 'block', padding: '10px', borderRadius: 7, background: 'var(--dsw-alias-bg-layer-1)', wordBreak: 'break-all', fontSize: 12 } }, tOtpAuth),
-							React.createElement('label', null, '输入验证器中的 6 位动态码以启用'),
-							React.createElement('input', { value: tCode, onChange: function (e: ChangeEventLike) { setTCode(e.target.value) }, placeholder: '6 位动态码', maxLength: 6 }),
-							React.createElement('div', { className: 'row', style: { marginTop: 12 } },
-								React.createElement('button', { onClick: enableTotp, disabled: busy }, '启用 TOTP'),
-								React.createElement('button', { className: 'ghost', onClick: function () { setTSecret(''); setTOtpAuth(''); setTQrUrl(''); setTCode('') }, disabled: busy }, '取消')),
-						)),
+					: totpSetup,
+			))
+
+			// —— 通行密钥卡片 ——
+			var pkSupported = pk.rp !== null && pk.rp.supported === true
+			var pkPort = ''
+			try { pkPort = location.port !== '' ? ':' + location.port : '' } catch (e) { /* ignore */ }
+			cards.push(React.createElement('div', { className: 'card', key: 'passkey' },
+				React.createElement('h2', null, '通行密钥（Passkey）'),
+				React.createElement('div', null,
+					pk.list.length > 0
+						? React.createElement('span', { className: 'badge admin' }, '已绑定 ' + pk.list.length + ' 个')
+						: React.createElement('span', { className: 'badge user' }, '未绑定'),
+					pk.twoFactor ? React.createElement('span', { className: 'meta' }, '两步验证已开启') : null,
+					pk.list.length >= pk.max ? React.createElement('span', { className: 'meta' }, '已达上限 ' + pk.max + ' 个') : null,
+				),
+				!pk.loaded
+					? React.createElement('div', { className: 'muted', style: { marginTop: 8 } }, '加载中…')
+					: null,
+				pk.loaded && !pkSupported
+					? React.createElement('div', { className: 'err', style: { marginTop: 8 } },
+						(pk.rp !== null && pk.rp.error ? pk.rp.error : '当前访问地址无法使用通行密钥。') +
+						(pk.rp !== null && pk.rp.suggestedHost ? '请改用 http://' + pk.rp.suggestedHost + pkPort + ' 打开面板后再试。' : ''))
+					: null,
+				pk.loaded && pkSupported
+					? React.createElement('div', { className: 'muted', style: { marginTop: 8 } },
+						'用指纹 / 面容 / 设备 PIN 代替密码登录。私钥永不离开设备，服务器只保存公钥；一个账号可以绑定多个（本机设备、多台手机）。')
+					: null,
+				pk.loaded && pkSupported && pk.list.length > 0
+					? React.createElement('table', null,
+						React.createElement('thead', null,
+							React.createElement('tr', null,
+								React.createElement('th', null, '名称'),
+								React.createElement('th', null, '类型'),
+								React.createElement('th', null, '操作'),
+							)),
+						React.createElement('tbody', null,
+							pk.list.map(function (p: PasskeySummary) {
+								return React.createElement('tr', { key: p.id },
+									React.createElement('td', null, p.label,
+										p.backedUp ? React.createElement('span', { className: 'meta' }, '已备份') : null),
+									React.createElement('td', null, React.createElement('span', { className: 'muted' }, passkeyLabel(p))),
+									React.createElement('td', null,
+										React.createElement('div', { className: 'actions' },
+											React.createElement('button', { className: 'ghost', onClick: function () { renamePasskey(p) }, disabled: busy || su.busy }, '重命名'),
+											React.createElement('button', { className: 'danger', onClick: function () { removePasskey(p) }, disabled: busy || su.busy }, '删除'))),
+								)
+							}),
+						),
+					)
+					: null,
+				pk.loaded && pkSupported && pk.list.length < pk.max
+					? React.createElement('div', null,
+						React.createElement('label', null, '名称（可选，便于区分设备）'),
+						React.createElement('input', { value: pkName, onChange: function (e: ChangeEventLike) { setPkName(e.target.value) }, maxLength: 40, placeholder: '例如：我的笔记本 / iPhone' }),
+						React.createElement('div', { className: 'row', style: { marginTop: 12 } },
+							React.createElement('button', { onClick: function () { askStepUp('add', '', 'localDevice', pkName) }, disabled: busy || su.busy }, '＋ 本机通行密钥'),
+							React.createElement('button', { className: 'ghost', onClick: function () { askStepUp('add', '', 'remoteDevice', pkName) }, disabled: busy || su.busy }, '📱 手机扫码添加')),
+						React.createElement('div', { className: 'muted', style: { marginTop: 8 } },
+							'「本机通行密钥」使用这台电脑的指纹 / 面容 / Windows Hello；「手机扫码添加」由浏览器显示二维码，用手机相机扫码后在本机完成绑定（手机无需与电脑处于同一网络）。'))
+					: null,
 			))
 
 			if (isAdmin) {
@@ -493,6 +806,7 @@
 								React.createElement('th', null, '角色'),
 								React.createElement('th', null, '昵称'),
 								React.createElement('th', null, '邮箱'),
+								React.createElement('th', null, '通行密钥'),
 								React.createElement('th', null, '操作'),
 							)),
 						React.createElement('tbody', null,
@@ -502,9 +816,13 @@
 									React.createElement('td', null, React.createElement('span', { className: 'badge ' + u.role }, roleLabel(u.role))),
 									React.createElement('td', null, u.displayName || '—'),
 									React.createElement('td', null, u.email || '—'),
+									React.createElement('td', null, (u.passkeyCount || 0) + ' 个'),
 									React.createElement('td', null,
 										React.createElement('div', { className: 'actions' },
 											React.createElement('button', { className: 'ghost', onClick: function () { resetPassword(u) }, disabled: busy }, '重置密码'),
+											(u.passkeyCount || 0) > 0
+												? React.createElement('button', { className: 'ghost', onClick: function () { resetPasskeys(u) }, disabled: busy }, '清除通行密钥')
+												: null,
 											React.createElement('button', { className: 'ghost', onClick: function () { toggleRole(u) }, disabled: busy }, '切换角色'),
 											React.createElement('button', { className: 'danger', onClick: function () { deleteUser(u) }, disabled: busy }, '删除'),
 										)),
@@ -513,7 +831,7 @@
 						),
 					),
 					React.createElement('div', { className: 'muted', style: { marginTop: 8 } },
-						'说明：管理员可以新增、删除用户并重置密码，但无法查看任何人的当前密码。不能删除或降级最后一个管理员。'),
+						'说明：管理员可以新增、删除用户并重置密码，也可以在设备丢失时清除某个用户的通行密钥（用于账号救援），但无法查看任何人的当前密码。不能删除或降级最后一个管理员。'),
 				))
 			}
 
@@ -566,7 +884,7 @@
 			cards.push(React.createElement('div', { className: 'msg', key: 'msg' }, msg))
 			cards.push(React.createElement('div', { className: 'err', key: 'err' }, err))
 
-			return React.createElement('div', { className: 'dshua' }, cards)
+			return React.createElement('div', { className: 'dshua' }, cards, renderStepUp())
 		}
 
 		// ============ 模型配置页锁（仅管理员；仅普通用户注入） ============
@@ -608,10 +926,10 @@
 			var card = document.createElement("div")
 			card.style.cssText = "width:420px;max-width:calc(100vw - 40px);background:var(--dsw-alias-bg-layer-2,#171a21);border:1px solid var(--dsw-alias-border-l2,#2a2f3a);border-radius:12px;padding:24px;color:var(--dsw-alias-label-primary,#e6e6e6);font-family:system-ui,sans-serif;font-size:14px;box-shadow:0 12px 40px rgba(0,0,0,.45)"
 			var title = document.createElement("div")
-			title.textContent = "建议开启两步验证（TOTP）"
+			title.textContent = "建议开启两步验证"
 			title.style.cssText = "font-size:16px;font-weight:700;margin-bottom:10px"
 			var body = document.createElement("div")
-			body.textContent = "为增强账号安全，建议在【设置】→【用户管理】→「两步验证（TOTP）」中添加 TOTP 令牌（Google Authenticator / Microsoft Authenticator 等）。也可以永久忽略此提醒。"
+			body.textContent = "为增强账号安全，建议在【设置】→【用户管理】中添加登录因子：TOTP 动态码令牌（Google Authenticator / Microsoft Authenticator 等）或通行密钥（指纹 / 面容 / 设备 PIN）。也可以永久忽略此提醒。"
 			body.style.cssText = "color:var(--dsw-alias-label-secondary,#aab2c3);line-height:22px;margin-bottom:18px"
 			var row = document.createElement("div")
 			row.style.cssText = "display:flex;gap:10px;justify-content:flex-end"
@@ -674,8 +992,8 @@
 						)
 					})
 				}
-				// 登录后：未绑定 TOTP 且未永久忽略 → 弹窗提醒（管理员同样提醒）
-				if (j.me !== undefined && j.me.totpEnabled !== true && j.me.totpIgnore !== true) {
+				// 登录后：既没有 TOTP 也没有通行密钥且未永久忽略 → 弹窗提醒（管理员同样提醒）
+				if (j.me !== undefined && j.me.totpEnabled !== true && (j.me.passkeyCount || 0) === 0 && j.me.totpIgnore !== true) {
 					setTimeout(showTotpReminder, 600)
 				}
 			}).catch(function (e: CodedError) {

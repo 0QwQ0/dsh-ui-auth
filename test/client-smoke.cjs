@@ -122,6 +122,18 @@ const tick = () => new Promise((r) => setTimeout(r, 20))
 check('2FA toggle is a switch (not checkbox)', /className: ['"]switch['"]/.test(code) && code.includes('dshua .switch input:checked + .track'))
   check('invite management card present (邀请码管理)', code.includes('邀请码管理（管理员）') && code.includes('inviteCreate') && code.includes('inviteList'))
 
+  // ---- 通行密钥（Passkey，0.6.4）----
+  check('Passkey card present (通行密钥)', code.includes('通行密钥（Passkey）') && code.includes('passkeyList') && code.includes('passkeyStepUp'))
+  check('Passkey add flows: local device + phone QR', code.includes('本机通行密钥') && code.includes('手机扫码添加') && code.includes('localDevice') && code.includes('remoteDevice'))
+  check('Passkey ceremonies use the community library (startRegistration/startAuthentication)',
+    code.includes('startRegistration') && code.includes('startAuthentication') && code.includes('@simplewebauthn/browser'))
+  check('Passkey step-up dialog present (改动登录因子前确认身份)', code.includes('确认身份') && code.includes('passkeyAddVerify') && code.includes('passkeyStepUp'))
+  check('Passkey rename/remove wired', code.includes('passkeyRename') && code.includes('passkeyRemove') && code.includes('重命名') && code.includes('删除通行密钥'))
+  check('Admin passkey recovery wired (清除通行密钥)', code.includes('passkeyReset') && code.includes('清除通行密钥'))
+  check('Passkey origin hint surfaced (IP 字面量需改用 localhost)', code.includes('suggestedHost') && code.includes('无法使用通行密钥'))
+  check('2FA switch label reflects the factor in use (动态码 / 通行密钥)', code.includes('登录需密码 + 动态码') && code.includes('登录需密码 + 通行密钥'))
+  check('Passkey login reminder only when no factor exists', code.includes('passkeyCount') && code.includes('totpEnabled !== true'))
+
   console.log(failures === 0 ? '\nCLIENT BUNDLE SMOKE TEST PASSED' : `\n${failures} FAILURES`)
   process.exit(failures === 0 ? 0 : 1)
 })()

@@ -10,5 +10,5 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/client.ts"]
+  "include": ["src/client.ts", "src/passkey-browser.ts"]
 }

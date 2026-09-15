@@ -121,6 +121,46 @@ DSH_UI_URL=http://127.0.0.1:3201 DSH_UI_USER=admin DSH_UI_PASSWORD=<一次性口
 
 ## 5. 已知问题与修复记录
 
+### 0.6.4：通行密钥（Passkey）与浏览器对 RP ID 的硬性约束
+
+两条传输线都不受影响：通行密钥的全部端点都在 `/auth/*` 之下（登录页/注册页/脚本/登录接口），
+而 modern 网关只接管 `/api`，因此 0.1.1-rc.2（legacy）与 0.1.2+（modern）走的是同一条插件内
+处理路径，无需为传输线做分支。
+
+**实测发现的浏览器约束**（`test/webauthn-probe.mjs`，Chrome 152 / Windows，CDP 虚拟认证器）：
+
+| 访问来源 | 注册 | 免用户名登录 | 说明 |
+|---|---|---|---|
+| `http://localhost:<port>` | ✅ | ✅ | 回环地址被浏览器视为安全上下文；RP ID = `localhost` |
+| `http://127.0.0.1:<port>` | ❌ | ❌ | `SecurityError: 127.0.0.1 is an invalid domain` —— Blink 不接受 IP 字面量作为 RP ID |
+| `http://<内网 IP>:<port>` | ❌ | ❌ | 明文 HTTP 非安全上下文 + IP 不能作为 RP ID |
+| `https://<域名>` | ✅ | ✅ | 推荐的生产部署方式 |
+
+因此插件把这条约束**前置到服务端**：`assessRelyingParty()` 判定地址不可用时，
+`/auth/passkey/*` 直接返回 409（含 `issue` 与 `suggestedHost`），登录页不注入通行密钥按钮而是显示
+「请改用 http://localhost:<端口>」，设置面板的通行密钥卡片同样给出该提示——不会出现"按钮点了没反应"。
+反向代理或子域共享场景可用 `DSH_AUTH_RP_ID` / `DSH_AUTH_ORIGIN` 显式指定。
+
+**验收（2026-09-16）**：
+
+| 验证项 | 结果 |
+|---|---|
+| `npm test` | 安全套件 **147/147**、modern 策略 **13/13**、host-smoke（含通行密钥 16 项）、client-smoke（含通行密钥 9 项）、登录页/端点 **18/18** |
+| 隔离 0.1.5-rc.1 实例：通行密钥端到端（真实 Chrome + 虚拟认证器） | **27/27** —— 注册（`residentKey=required` + UV）、免用户名登录（可发现凭据）、计数器推进、2FA 第二步走通行密钥断言、反锁死拒删、结束复位 |
+| 隔离 0.1.5-rc.1 实例：浏览器级设置面板 | **8/8**（含通行密钥卡片与按地址给出的状态） |
+| 真实 0.1.1-rc.2 部署：legacy 回归 + 浏览器级 | **14/14 + 6/6**（见下表） |
+| `npm run store:check` | **20/20**（新增运行依赖已登记，权限信号集合不变） |
+
+**0.1.1-rc.2 真实部署复核**（本机面板，重启后加载 0.6.4 构建）：
+
+| 验证项 | 结果 |
+|---|---|
+| `test/live-legacy-check.mjs`（dotted `/api/<a>.<b>`、`apiProxy` 事件流、隔离与 403 面） | **14/14** |
+| `test/live-ui-check.mjs`（设置面板「用户管理」入口、页面渲染、通行密钥卡片按地址给出状态） | **6/6** |
+
+> 真实面板以 `http://127.0.0.1:3080` 提供服务，因此浏览器级复核里通行密钥卡片显示的是
+> 「请改用 http://localhost:3080」提示，而不是添加入口——这正是设计行为（IP 字面量无法使用通行密钥）。
+
 ### 0.6.2：TypeScript 重写（行为不变）
 
 `src/*.ts` 成为唯一源码，`lib/*.js` 改为构建产物：
@@ -128,9 +168,11 @@ DSH_UI_URL=http://127.0.0.1:3201 DSH_UI_USER=admin DSH_UI_PASSWORD=<一次性口
 | 源码 | 产物 | 构建 |
 |---|---|---|
 | `src/index.ts` | `lib/index.js`（ESM） | `tsc -p tsconfig.json` |
+| `src/webauthn.ts` | `lib/webauthn.js` | 同上（0.6.4 新增） |
 | `src/modern-gateway.ts` | `lib/modern-gateway.js` | 同上 |
 | `src/modern-policy.ts` | `lib/modern-policy.js` | 同上 |
 | `src/client.ts` | `lib/client.js` | `node build/client.mjs`（esbuild + `__ModuleLoader__` 工厂包装） |
+| `src/passkey-browser.ts` | `lib/passkey-browser.js` | 同上（IIFE，暴露全局 `SWA`；登录页通过 `/auth/passkey/browser.js` 加载，0.6.4 新增） |
 
 客户端必须用 esbuild 包装的原因：DSH 客户端模块契约是经典脚本 + 工厂形式
 （`window.__ModuleLoader__.load({ id, factory: (require) => … })`，`require('react')`

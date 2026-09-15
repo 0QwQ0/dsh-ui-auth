@@ -18,5 +18,5 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/index.ts", "src/modern-gateway.ts", "src/modern-policy.ts"]
+  "include": ["src/index.ts", "src/webauthn.ts", "src/modern-gateway.ts", "src/modern-policy.ts"]
 }
