@@ -30,6 +30,23 @@ test('unreviewed endpoints, global settings and arbitrary paths are refused', as
   assert.equal(await policy.authorize(alice, 'session/create', request({ workspaceId: 'wa', cwd: '/bob' })), false)
 })
 
+test('agent presets: the roster is readable, per-session use is owner-scoped, authoring stays admin-only', async () => {
+  // 回归：ordinary 用户的【Agent 预设】设置页在加载时调用 agentPresets/list，
+  // 被 deny-by-default 拒绝会让整页显示「无法加载 Agent 预设」。
+  assert.equal(await policy.authorize(alice, 'agentPresets/list', { args: {} }), true)
+  // read/select 是 agent 作用域：只允许作用在自己拥有的会话上。
+  for (const method of ['agentPresets/read', 'agentPresets/select']) {
+    assert.equal(await policy.authorize(alice, method, { args: { agentId: 'a', agentPreset: 'p' } }), true)
+    assert.equal(await policy.authorize(alice, method, { args: { agentId: 'b', agentPreset: 'p' } }), false)
+    assert.equal(await policy.authorize(alice, method, { args: {} }), false)
+  }
+  // 写出新的预设组合（可挂载插件与提示词）仍限管理员。
+  for (const method of ['agentPresets/copy', 'agentPresets/deletePreset']) {
+    assert.equal(await policy.authorize(alice, method, { args: { from: 'p', id: 'x', name: 'x' } }), false)
+  }
+  assert.equal(await policy.authorize({ username: 'root', role: 'admin' }, 'agentPresets/deletePreset', { args: { id: 'p' } }), true)
+})
+
 test('creation requires an owned Workspace and checks cold identity adoption', async () => {
   assert.equal(await policy.authorize(alice, 'session/create', request({ workspaceId: 'wa', sessionId: 'new' })), true)
   assert.equal(await policy.authorize(alice, 'session/create', request({ workspaceId: 'wa', sessionId: 'b' })), false)

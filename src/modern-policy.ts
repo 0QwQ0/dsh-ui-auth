@@ -139,6 +139,12 @@ export function createModernPolicy(owners: OwnershipLookup): ModernPolicy {
         return false
       }
       if (SHARED_READ.has(endpoint)) return true
+      // Agent 预设：读清单与"为本次会话选择预设"是普通用户的正常能力——设置面板的【Agent 预设】
+      // 页在加载时先调 agentPresets/list（被拒会让整页显示「无法加载 Agent 预设」），新建会话的
+      // 预设选择器同样依赖它。read/select 是 agent 作用域（wire 名 agentId），按会话属主校验。
+      // 只有 copy/deletePreset 会写出新的预设组合（可挂载插件与提示词），仍限管理员。
+      if (endpoint === 'agentPresets/list') return true
+      if (endpoint === 'agentPresets/read' || endpoint === 'agentPresets/select') return agent(principal, args)
       if (namespace === 'session') {
         if (SESSION_READ.has(method as string)) return true
         if (method === 'page' || method === 'follow') return authorizeSession(args, principal)

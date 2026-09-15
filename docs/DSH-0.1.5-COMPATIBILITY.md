@@ -51,15 +51,18 @@ dsh-ui-auth **在同一份代码里同时支持两条 Host 传输线**，按能�
 - 自己的 agent 范围：`skills/list`、`fileReferences/list`、`sessionReferenceResolver/candidates`、
   `fileUploads/upload`、`commands/list`、`goals/*`
 - 自己的会话反馈：`messageFeedback/*`、`sessionFeedback/record`
+- Agent 预设：`agentPresets/list`（设置面板【Agent 预设】页与新建会话的预设选择器在加载时依赖它）、
+  `agentPresets/read`、`agentPresets/select`（后两者是 agent 作用域，按会话属主校验）
 - 共享只读元数据：`settings/describe`（宿主已脱敏）、`llm/listProviders`、`llm/listConfigurableProviders`
 - 自有资源 URL：`/api/session.export?sessionId=`、`/api/session/uploadFileBinary?sessionId=`（属主校验）
 
 ### 普通用户一律拒绝（0.1.5）
 
-`settings/{update,replace,mutate,openSettingsDocument,openAgentPresetDirectory}`、`credentials/*`、
-`workspace/create`、`directoryPicker/*`、`session/openWorkspacePath`、`commands/execute`、
-`subagents/*`、`agentPresets/*`、`llm/discoverModels`、`pluginInventory/list`、
-`dynamicCordisRunner/*`、`/api/file`、`/api/present.*`、`/open-in-app/*`、以及所有未列出的端点与事件。
+`settings/{update,replace,mutate,openSettingsDocument,openAgentPresetDirectory,canOpenAgentPresetDirectory}`、
+`credentials/*`、`llm/discoverModels`、`agentPresets/{copy,deletePreset}`（会写出新的预设组合，
+而预设可以挂载插件与提示词）、`workspace/create`、`directoryPicker/*`、`session/openWorkspacePath`、
+`commands/execute`、`subagents/*`、`pluginInventory/list`、`dynamicCordisRunner/*`、`/api/file`、
+`/api/present.*`、`/open-in-app/*`、以及所有未列出的端点与事件。
 
 > 与 legacy 路径的两处**有意差异**（modern 更严）：legacy 允许普通用户创建 workspace 与改 `general` 设置；
 > modern 路径把 workspace 创建视为**部署方能力**（`cwd`/路径属于宿主能力，不是用户能力），
@@ -100,6 +103,9 @@ DSH015_URL=http://127.0.0.1:3201 DSH015_BOOTSTRAP=<tmp>/work/dsh-ui-auth-bootstr
 # 浏览器级验收（设置面板「用户管理」入口、页面渲染与通行密钥卡片状态）
 DSH_UI_URL=http://127.0.0.1:3201 DSH_UI_USER=admin DSH_UI_PASSWORD=<一次性口令> node test/live-ui-check.mjs
 
+# 普通用户视角的设置页可用性（modern 线）：Agent 预设页必须能加载，写操作仍 403
+DSH_PRESET_URL=http://localhost:3201 DSH_PRESET_ADMIN_PASSWORD=<一次性口令> node test/live-presets-check.mjs
+
 # 通行密钥端到端（真实 Chrome + CDP 虚拟认证器；必须用 localhost）
 DSH_PK_URL=http://localhost:3201 DSH_PK_USER=admin DSH_PK_PASSWORD=<一次性口令> node test/live-passkey-check.mjs
 
@@ -111,6 +117,50 @@ DSH_LEGACY_URL=http://127.0.0.1:3080 node test/live-legacy-check.mjs
 更早版本（0.6.0–0.6.2）在两条传输线上的验收结果保留在「历史验收」小节。
 
 ## 5. 已知问题与修复记录
+
+### 0.6.5：modern 线上普通用户的【Agent 预设】页面加载失败
+
+**现象**（真实用户报告）：DSH `0.1.2+` 的部署里，普通用户打开【设置】→【Agent 预设】显示
+「无法加载 Agent 预设。」，客户端日志为
+`client api: agentPresets/list failed: transport failure for /api/agentPresets/list: HTTP 403`。
+
+**根因**：modern 路径对普通用户是 deny-by-default，而 `agentPresets/*` 被整体拒。该页面在加载时
+先调 `agentPresets/list` 取预设清单（新建会话的预设选择器同样依赖它），被拒后整页失败。
+这不是设计取舍，而是**只读能力被误拒**——预设清单是部署方提供的公开元数据，
+普通用户本来就需要据此为会话选择预设。
+
+**修复**：放行 `agentPresets/list`，以及 agent 作用域（wire 名 `agentId`，按会话属主校验）的
+`agentPresets/read` 与 `agentPresets/select`；`agentPresets/copy` 与 `agentPresets/deletePreset`
+会写出新的预设组合（预设可以挂载插件与提示词，属提权面），继续限管理员。
+`settings/canOpenAgentPresetDirectory`、`settings/openAgentPresetDirectory`、`settings/update`
+仍被拒——客户端把它们的失败按"该功能不可用"处理，不影响页面加载。
+
+**回归防护**：新增 `test/live-presets-check.mjs`（14 项）：普通用户 `agentPresets/list` 必须 200、
+非属主 agent 的 `read`/`select` 与 `copy`/`deletePreset` 必须 403，并在真实浏览器里断言
+【Agent 预设】页面不出现加载失败文案、控制台无该端点的 403；
+`test/modern-policy.test.mjs` 同步新增策略单测（14 项）。
+
+**同类排查**：审计了全部设置页客户端 bundle 的加载期调用，另一个同类现象是
+【插件】页（只调 `pluginInventory/list`，被拒后显示「暂时无法读取插件。」）——该项属于
+**有意的收紧**（插件清单会暴露部署内部构成），是否放开由部署方决定，见下文「已知边界」。
+
+### 已知边界：普通用户设置页中仍被有意收紧的部分（0.1.2+）
+
+以下端点在 modern 路径下对普通用户保持拒绝，因此对应界面元素会显示"不可用"或按操作报错；
+它们**不会**让整页加载失败（除【插件】页会显示占位错误文案）：
+
+| 界面/能力 | 被拒端点 | 理由 |
+|---|---|---|
+| 【模型】页与 API Key | `credentials/*`、`llm/discoverModels`、`settings/mutate` | 模型与密钥属部署方能力；客户端对普通用户已替换为提示页 |
+| 【插件】页 | `pluginInventory/list` | 插件清单暴露部署内部构成（安装了什么、版本与描述） |
+| 预设的创建/删除 | `agentPresets/{copy,deletePreset}` | 预设可挂载插件与提示词，属提权面 |
+| 打开设置/预设目录 | `settings/openSettingsDocument`、`settings/openAgentPresetDirectory`、`settings/canOpenAgentPresetDirectory` | 文件系统路径属宿主能力 |
+| 任意设置写入 | `settings/{update,replace,mutate}` | 部署级配置 |
+| 斜杠命令/子代理/目录选择器/Dynamic Cordis | `commands/execute`、`subagents/*`、`directoryPicker/*`、`dynamicCordisRunner/*` | 可改权限、文件系统访问或加载插件 |
+
+需要放开的部署可通过 `uiAuth.registerPolicy()` 逐条登记（见 §3）；这是**有意的白名单收紧**，
+而不是"还没做完"。若某天发现普通用户的某个**只读**页面因此整页失败，请按 0.6.5 的方式修：
+放行只读端点（必要时按属主校验），保留写操作的管理员限制。
 
 ### 0.6.4：通行密钥（Passkey）与浏览器对 RP ID 的硬性约束
 
@@ -230,7 +280,6 @@ HTTP/RPC 级验收完全看不到该故障，只有真实浏览器能暴露。
 > 与 **7/7**（0.1.1-rc.2 面板）；数字差异来自新增用例，不是行为回归。
 
 ## 6. 上游草稿的复用与差异
-
 本版本的 modern 路径**复用了上游 PR #1 的设计与代码骨架**
 （`lib/modern-gateway.js` 的 carrier 桥接、mux 处理、correlation 与 waterfall 释放；`lib/modern-policy.js` 的
 策略形状与 `uiAuth` 接口；`test/modern-policy.test.mjs` 的回归用例），并按 0.1.5 的真实面重建了
