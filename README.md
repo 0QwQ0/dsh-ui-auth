@@ -3,6 +3,7 @@
 [![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 [![npm version](https://img.shields.io/npm/v/dsh-ui-auth.svg)](https://www.npmjs.com/package/dsh-ui-auth)
 [![npm downloads](https://img.shields.io/npm/dm/dsh-ui-auth.svg)](https://www.npmjs.com/package/dsh-ui-auth)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/0QwQ0/dsh-ui-auth)
 
 ## 🔴 兼容性提示：legacy 版本（DSH 0.1.1-rc.2）的支持将于 v0.7.0 起结束
 
