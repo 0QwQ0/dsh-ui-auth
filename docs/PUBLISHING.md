@@ -48,8 +48,9 @@ gh run list --workflow=npm-publish.yml   # 查看运行结果
 
 ## 发版步骤
 
-1. 修改 `package.json` 的 `version`（并同步 `package-lock.json`），更新 `CHANGELOG.md`；
-2. `npm test` 与 `npm run verify:clean` 均通过后提交并推送 `main`；
+1. 修改 `package.json` 的 `version`（并同步 `package-lock.json`），在 `CHANGELOG.md` 顶部
+   新增该版本条目（含验证结果表）；行为或界面有变化时同步更新 `README.md`；
+2. `npm test`、`npm run typecheck`、`npm run store:check`、`npm run verify:clean` 均通过后提交并推送 `main`；
 3. 打 tag 并创建 Release：
    ```bash
    git tag -a vX.Y.Z -m "dsh-ui-auth X.Y.Z"
@@ -57,6 +58,19 @@ gh run list --workflow=npm-publish.yml   # 查看运行结果
    gh release create vX.Y.Z --title "dsh-ui-auth vX.Y.Z — <一句话摘要>" --notes-file <release-notes.md> --verify-tag
    ```
 4. CI 会据此自动发布到 npm（幂等：已发布的版本会跳过）。
+
+### 文档维护
+
+- **SECURITY.md 第 2 节的测试矩阵不要手工改**：它由安全套件的逐项输出生成——
+  ```bash
+  # Windows PowerShell
+  $env:DSH_SUITE_VERBOSE='1'; cmd /c "node test/security-suite.mjs > sec-verbose.out 2>&1"
+  node build/docs-matrix.mjs sec-verbose.out SECURITY.md
+  ```
+  这样就地替换文档里的矩阵小节（含类别计数与通行密钥的套件外证据表），
+  用例改名或增删后重跑即可，文档与用例不会漂移。
+- 每条发布说明都应能在文档中找到对应的可复现命令；「结论表」里的数字必须来自实际执行
+  （本次执行的时间/环境写进表格上方的行，例如「验收（YYYY-MM-DD，两条宿主线均以 X.Y.Z 构建实测）」）。
 
 ## 上架合规声明（DSH STORE）
 
@@ -78,7 +92,9 @@ gh run list --workflow=npm-publish.yml   # 查看运行结果
 重写或大改时的推荐证据组合：
 
 1. 上述要素多重集对比（无缺失/新增）；
-2. `npm test` 全链（安全套件 + 策略回归 + 冒烟 + 向量）；
+2. `npm test` 全链（安全套件 + 策略回归 + 冒烟 + 向量 + 登录页/端点联通）；
 3. 端到端：隔离的一次性 DSH 实例（0.1.5+）与真实部署（0.1.1-rc.2）回归脚本，
    见 [DSH-0.1.5-COMPATIBILITY.md](DSH-0.1.5-COMPATIBILITY.md) 第 4 节；
-4. 必要时用 esbuild 压缩两份产物比对 sha256（token 级一致）。
+4. 涉及界面或浏览器能力时，必须补真实浏览器验收（`npm run test:ui`、`npm run test:passkey`）——
+   客户端注册类问题与浏览器规则（例如 IP 字面量不能作为通行密钥域）只在真实浏览器里暴露；
+5. 必要时用 esbuild 压缩两份产物比对 sha256（token 级一致）。

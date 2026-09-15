@@ -1,10 +1,12 @@
-# DSH 版本支持与 0.1.5 适配（dsh-ui-auth 0.6.0）
+# DSH 版本支持与传输适配（当前版本 0.6.4）
 
-本插件**在同一份代码里同时支持两条 Host 传输线**，按能力探测自动选择，不需要用户配置：
+dsh-ui-auth **在同一份代码里同时支持两条 Host 传输线**，按能力探测自动选择，不需要用户配置；
+本节说明两条线的差异、modern 线对普通用户的收紧项，以及可复现的验收方式。
+（历史版本在各节的「修复记录」中说明。）
 
 | Host | 传输面 | 本插件走的路径 |
 |---|---|---|
-| DSH `0.1.1-rc.2`（开发基线，历史行为保持不变） | dotted `/api/<a>.<b>` + `apiProxy` 事件流（`/api/events.mux`、`/api/events.host`） | **legacy 路径**：dotted 方法表授权/过滤 + `apiProxy` 逐帧隔离 |
+| DSH `0.1.1-rc.2`（旧版基线，历史行为保持不变） | dotted `/api/<a>.<b>` + `apiProxy` 事件流（`/api/events.mux`、`/api/events.host`） | **legacy 路径**：dotted 方法表授权/过滤 + `apiProxy` 逐帧隔离 |
 | DSH `0.1.2-rc.1` … `0.1.5-rc.1`（当前 `latest`） | slash Remote `/api/<ns>/<method>` + `/api/remote.mux` 流 mux + 原生浏览器 cookie 门 | **modern 路径**：carrier 桥接 + 按端点审查的 deny-by-default 策略 |
 
 选择依据是 `typeof ctx.get('connection')?.authorizeIndex === 'function'`：该 API 在 0.1.1-rc.2 不存在，在 0.1.2 起存在。因此升级互不影响。
@@ -79,45 +81,34 @@
 `stream`（`matches(endpoint)`/`authorize`/`project`，`project` 返回 `null` 抑制该帧）、
 `upgrade`（自有 WebSocket 传输）。**登录成功不等于业务插件的数据隔离**：业务插件仍须自己做对象级授权与状态分区。
 
-## 4. 已执行的验收（可复现）
+## 4. 验收方法（可复现）
 
 ```bash
-# 单元与既有回归（147 项安全套件 + 13 项 modern 策略）
+# 单元与回归（安全套件、modern 策略、主机/客户端冒烟、登录页与端点联通）
 npm test
 
-# 隔离的 0.1.5-rc.1 实例（一次性 DSH_HOME + 临时工作目录）
+# 隔离的 0.1.5-rc.1 实例（一次性 DSH_HOME + 临时工作目录，任何临时路径均可）
 #   1) 安装官方 CLI 并初始化 profile
 npm install --prefix <tmp>/cli @deepseek-ai/dsh@0.1.5-rc.1
 DSH_HOME=<tmp>/home dsh plugin --profile web add <本仓库路径>
 #   2) 启动（端口自选，工作目录即插件状态根）
 DSH_HOME=<tmp>/home dsh web --port 3201 --no-open
-#   3) 端到端验收
+#   3) 端到端验收（HTTP/unary 与流式 mux）
 DSH015_URL=http://127.0.0.1:3201 DSH015_BOOTSTRAP=<tmp>/work/dsh-ui-auth-bootstrap.txt node test/live-015-check.mjs
 DSH015_URL=http://127.0.0.1:3201 DSH015_BOOTSTRAP=<tmp>/work/dsh-ui-auth-bootstrap.txt node test/live-015-mux.mjs
 
-# 开发基线 0.1.1-rc.2 回归（真实部署）
-DSH_LEGACY_URL=http://127.0.0.1:3080 node test/live-legacy-check.mjs
-
-# 浏览器级验收（设置面板「用户管理」入口与页面渲染）
+# 浏览器级验收（设置面板「用户管理」入口、页面渲染与通行密钥卡片状态）
 DSH_UI_URL=http://127.0.0.1:3201 DSH_UI_USER=admin DSH_UI_PASSWORD=<一次性口令> node test/live-ui-check.mjs
+
+# 通行密钥端到端（真实 Chrome + CDP 虚拟认证器；必须用 localhost）
+DSH_PK_URL=http://localhost:3201 DSH_PK_USER=admin DSH_PK_PASSWORD=<一次性口令> node test/live-passkey-check.mjs
+
+# 旧版基线 0.1.1-rc.2 回归（真实部署）
+DSH_LEGACY_URL=http://127.0.0.1:3080 node test/live-legacy-check.mjs
 ```
 
-实测结果（2026-09-14）：
-
-- `npm test`：**147/147 + modern 策略 13/13** 通过
-- 隔离 0.1.5-rc.1 实例：**28/28**（HTTP/unary Remote）通过——登录门 302、未认证 API 401、
-  登录后原生 UI 200（carrier 桥接成功）、slash Remote 可用、创建会话归属落盘、
-  普通用户看不到他人会话、跨用户 `session/page` 403、他人 workspace 建会话 403、`cwd` 覆盖 403、
-  9 项管理面逐条 403、未知端点 403、登出后 401
-- 同一实例的 **mux 流式验收 12/12** 通过——未认证升级被拒（socket 被销毁，未建立 101）、
-  admin `$events` 首帧 `ready{clientId}`、`session/control` 首帧 baseline、
-  普通用户 `workspace/follow` baseline 已裁剪为空、admin 收到自有会话 `api-session/added` 而
-  **普通用户同刻未收到该帧**（逐帧隔离）、普通用户未收到任何 waterfall
-- **浏览器级验收**：设置导航 `[通用设置 | 模型 | 插件 | Agent 预设 | 用户管理]`，
-  「用户管理」页渲染出「我的账号 / 修改密码 / 两步验证」，管理员额外看到「创建用户 / 邀请码管理」，
-  无插件级错误——隔离实例 **6/6**、真实 0.1.1-rc.2 面板 **5/5**
-- 0.1.1-rc.2 真实部署：**14/14** 通过——dotted Remote 仍可用、普通用户 LLM/凭据管理面 403、
-  会话导出属主检查 403、登出吊销生效
+最近一次完整验收的结果见下方「0.6.4：通行密钥与浏览器对 RP ID 的硬性约束」一节；
+更早版本（0.6.0–0.6.2）在两条传输线上的验收结果保留在「历史验收」小节。
 
 ## 5. 已知问题与修复记录
 
@@ -215,6 +206,28 @@ HTTP/RPC 级验收完全看不到该故障，只有真实浏览器能暴露。
 
 另注（非缺陷）：登录后浏览器仍会对 `/manifest.webmanifest` 发一个不带 cookie 的请求并被门拒绝（401），
 这是 PWA manifest 的取用方式所致，不影响功能；0.1.1-rc.2 上行为相同。
+
+### 历史验收（0.6.0–0.6.2，保留原始记录）
+
+`npm test` **147/147 + modern 策略 13/13** 通过。端到端：
+
+- **隔离 0.1.5-rc.1 实例：28/28**（HTTP/unary Remote）——登录门 302、未认证 API 401、
+  登录后原生 UI 200（carrier 桥接成功）、slash Remote 可用、创建会话归属落盘、
+  普通用户看不到他人会话、跨用户 `session/page` 403、他人 workspace 建会话 403、`cwd` 覆盖 403、
+  9 项管理面逐条 403、未知端点 403、登出后 401
+- **同一实例 mux 流式：12/12**——未认证升级被拒（socket 被销毁，未建立 101）、
+  admin `$events` 首帧 `ready{clientId}`、`session/control` 首帧 baseline、
+  普通用户 `workspace/follow` baseline 已裁剪为空、admin 收到自有会话 `api-session/added` 而
+  **普通用户同刻未收到该帧**（逐帧隔离）、普通用户未收到任何 waterfall
+- **浏览器级**：设置导航 `[通用设置 | 模型 | 插件 | Agent 预设 | 用户管理]`，
+  「用户管理」页渲染出「我的账号 / 修改密码 / 两步验证」，管理员额外看到「创建用户 / 邀请码管理」，
+  无插件级错误——隔离实例 **6/6**、旧版 0.1.1-rc.2 面板 **5/5**
+- **0.1.1-rc.2 真实部署：14/14**——dotted Remote 仍可用、普通用户 LLM/凭据管理面 403、
+  会话导出属主检查 403、登出吊销生效
+- `store:check` **20/20**
+
+> 0.6.4 起浏览器级用例增加了两项通行密钥断言，因此同一批验收的数字相应变为 **8/8**（隔离实例）
+> 与 **7/7**（0.1.1-rc.2 面板）；数字差异来自新增用例，不是行为回归。
 
 ## 6. 上游草稿的复用与差异
 

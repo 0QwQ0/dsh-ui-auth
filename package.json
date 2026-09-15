@@ -31,7 +31,9 @@
     "test:compat:0.1.5": "node test/live-015-check.mjs",
     "test:compat:0.1.1": "node test/live-legacy-check.mjs",
     "test:ui": "node test/live-ui-check.mjs",
-    "test:passkey": "node test/live-passkey-check.mjs"
+    "test:passkey": "node test/live-passkey-check.mjs",
+    "docs:matrix": "node build/docs-matrix.mjs --run SECURITY.md",
+    "assets": "node test/shot.mjs"
   },
   "dsh": {
     "bundle": {

@@ -883,4 +883,11 @@ if (failed.length > 0) {
   console.log('\n失败项:')
   for (const f of failed) console.log(`  [${f.category}] ${f.label} :: ${f.extra ?? ''}`)
 }
+
+// 逐项明细（DSH_SUITE_VERBOSE=1）：输出即「类别 + 用例名」清单，
+// 文档里的测试矩阵直接据此生成，避免手工维护的清单与用例逐渐不一致。
+if (process.env.DSH_SUITE_VERBOSE === '1') {
+  console.log('\n================ 逐项明细 ================')
+  for (const r of results) console.log(`${r.pass ? 'PASS' : 'FAIL'}  ${r.category.padEnd(8)} ${r.label}`)
+}
 process.exit(failed.length === 0 ? 0 : 1)
