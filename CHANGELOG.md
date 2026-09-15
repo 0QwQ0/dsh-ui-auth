@@ -59,6 +59,9 @@ Chrome 会抛 `SecurityError: 127.0.0.1 is an invalid domain`（实测 Chrome 15
 - 新增可选环境变量 `DSH_AUTH_RP_ID` / `DSH_AUTH_ORIGIN` / `DSH_AUTH_RP_NAME`。
 - 新增源码 `src/webauthn.ts`（RP/来源解析、一次性挑战、挑战-响应封装）与 `src/passkey-browser.ts`；
   构建产物 `lib/webauthn.js`、`lib/passkey-browser.js`。
+- 文档工具：`npm run docs:matrix` 用安全套件的逐项输出重新生成 SECURITY.md 的测试矩阵
+  （套件未全绿时拒绝改写文档）；`npm run assets` 在一次性实例上重拍 README 预览图
+  （`test/shot.mjs`，环境变量驱动、不写真实账号数据）。
 
 ### 验证（2026-09-16）
 
