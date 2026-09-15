@@ -67,7 +67,7 @@ manifest（`package.json`）声明如下，Catalog 自动化从该文件读取�
 
 ```text
 $env:DSH_HOME = <临时 home>
-dsh plugin --profile web add F:\aura\pluginDev\dsh-ui-auth
+dsh plugin --profile web add <本插件目录的绝对路径>
 ```
 
 实际输出（节选）：
@@ -75,7 +75,7 @@ dsh plugin --profile web add F:\aura\pluginDev\dsh-ui-auth
 ```text
 dsh: initialized profile web at <临时 home>\profiles\web
 dependencies:
-+ dsh-ui-auth link:F:/aura/pluginDev/dsh-ui-auth
++ dsh-ui-auth link:<本插件目录的绝对路径>
 Already up to date
 Done in 330ms using pnpm v11.22.0
 ```
@@ -130,7 +130,7 @@ HTTP 探测（全部真实请求）：
 dsh plugin --profile web remove dsh-ui-auth
 ```
 
-实际输出：pnpm 移除 `dsh-ui-auth link:F:/aura/pluginDev/dsh-ui-auth`，随后
+实际输出：pnpm 移除 `dsh-ui-auth link:<本插件目录的绝对路径>`，随后
 `dsh web --dump-config` 中 `dsh-ui-auth` 命中数为 **0**，profile manifest bundles
 还原为 `@deepseek-ai/dsh-base, @deepseek-ai/dsh-web-app`。
 

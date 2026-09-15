@@ -14,10 +14,12 @@
     "src",
     "build",
     "docs",
+    "assets",
     "cordis.patch.yml",
     "LICENSE",
     "README.md",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "SECURITY.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && node build/client.mjs",

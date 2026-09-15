@@ -2,114 +2,107 @@
 
 [![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 
-在 DSH Web UI 前套一层用户名/密码登录校验，未登录用户无法访问任何页面、API
-或 WebSocket 通道。
+给 DeepSeek Harness（DSH）的 Web UI 加一道**用户名 / 密码登录门**：未登录时无法访问任何页面、
+API 或 WebSocket 通道；登录后可管理用户、邀请码与两步验证（TOTP），并按登录用户隔离会话数据。
 
-## DSH 版本支持（0.6.0 起双线）
+适用场景：把 DSH 面板暴露到内网或公网时，需要一个前置认证层，并希望不同使用者之间互不可见。
 
-同一份代码按能力探测自动选择传输适配，无需配置：
+## 特性一览
 
-| Host 版本 | 走的路径 | 说明 |
-|---|---|---|
-| `0.1.1-rc.2`（开发基线） | **legacy** | dotted `/api/<a>.<b>` + `apiProxy` 事件流，历史行为不变 |
-| `0.1.2-rc.1` … `0.1.5-rc.1`（当前 `latest`） | **modern** | slash Remote `/api/<ns>/<method>` + `/api/remote.mux` 流 mux + 原生浏览器 cookie 门（插件内部代换 carrier cookie），普通用户按端点 deny-by-default |
+- **全接口拦截**：在 DSH 路由分发之前包装其 HTTP 服务器，覆盖 `/api/*`、`/plugins/*`、HMR、
+  SPA fallback 与 WebSocket 升级通道，没有旁路。未登录时页面请求 302 跳登录页、API 返回 401、
+  WS 升级直接断开；登录后原请求原样透传。
+- **登录页与注册页**：中文界面，登录成功写入 `dsh_auth` Cookie（HttpOnly、SameSite=Strict、
+  12 小时滑动续期）；注册需**邮箱 + 用户名 + 密码 + 有效邀请码**，注册成功自动登录并引导绑定 TOTP。
+- **用户管理**：所有用户可改自己的昵称/邮箱/密码并管理自己的 TOTP；管理员可增删用户、重置密码、
+  切换角色、生成/撤销邀请码。**任何人都无法查看他人的当前密码**。
+- **两步验证（TOTP）**：RFC 6238，可用 Google / Microsoft Authenticator 扫码绑定，也支持手动输入密钥；
+  启用后登录需「密码 + 动态码」，也支持「免密 + 动态码」。
+- **模型与密钥仅管理员**：设置面板的「模型」页对普通用户替换为提示页；服务端同样强制——
+  普通用户对模型/密钥相关接口一律 403，绕过界面直调 API 也无法修改。
+- **按用户隔离**：会话与工作区在创建时记录归属；普通用户的会话/工作区列表只显示自己的，
+  直连他人会话返回 403，WebSocket 事件流按归属**逐帧过滤**（在网络层就收不到他人数据）。
+  管理员不受限。
+- **登录防护**：密码 PBKDF2-HMAC-SHA256（每用户随机盐、60000 轮、常量时间比较）、
+  密码策略「≥8 位且至少两种字符类型」、按来源 IP 的失败锁定、认证响应一律 `Cache-Control: no-store`。
+- **会话与审计**：会话可跨重启恢复（磁盘只存 Token 的 SHA-256 哈希）；管理员操作与越权尝试
+  写入 JSONL 审计文件。
 
-- 判定条件：`ctx.get('connection')?.authorizeIndex` 是否存在。
-- modern 路径的完整端点清单、有意收紧项、下游 `uiAuth` 接口与实测证据见
-  [docs/DSH-0.1.5-COMPATIBILITY.md](docs/DSH-0.1.5-COMPATIBILITY.md)。
-- 两条线都保留「登录门 + 按用户隔离 + 管理面拒绝」；modern 路径额外支持
-  `0.1.5` 的流式 mux 逐帧复核与 waterfall 回执不悬置。
+## 环境要求
 
-## 源码与构建（0.6.2 起为 TypeScript）
+| 项 | 要求 |
+|---|---|
+| DSH | `0.1.1-rc.2`，或 `0.1.2-rc.1` ~ `0.1.5-rc.1`（web profile；两条传输线都支持，见「DSH 版本兼容性」） |
+| Node.js | `^22.19.0 || >=24.0.0`（与 DSH 一致） |
+| 运行时依赖 | `qrcode`（生成 TOTP 二维码）与 `ws`（流式通道），安装时自动获取，无需手动构建 |
 
-`src/*.ts` 是唯一源码，`lib/*.js` 是**构建产物**（DSH 直接消费仓库，因此产物一并提交）：
+## 安装
 
-| 源码 | 产物 | 构建方式 |
-|---|---|---|
-| `src/index.ts`（宿主网关/认证/用户管理） | `lib/index.js`（ESM） | `tsc -p tsconfig.json` |
-| `src/modern-gateway.ts`（0.1.2+ 传输适配） | `lib/modern-gateway.js` | 同上 |
-| `src/modern-policy.ts`（端点策略表） | `lib/modern-policy.js` | 同上 |
-| `src/client.ts`（设置面板客户端） | `lib/client.js`（DSH 客户端契约） | `node build/client.mjs`（esbuild） |
-
-客户端为什么必须用 esbuild 包装：DSH 的客户端模块契约是**经典脚本 + 工厂形式** ——
-`window.__ModuleLoader__.load({ id, factory: (require) => { … return module.exports } })`，
-且 `require('react')` 取自宿主的冻结模块表（React 不是全局变量）。
-`build/client.mjs` 负责该包装并在构建后自检产物形状。
+本包是标准的 DSH profile bundle（声明了 `dsh.bundle.patch` 与 `dsh.client`），
+`dsh plugin` 会自动把它加入 profile 的 bundle 名单：
 
 ```bash
-npm ci                 # 需要 devDependencies（typescript / esbuild / @types/*）
-npm run typecheck      # 宿主机 + 客户端两套 tsconfig 的严格类型检查
-npm run build          # src/*.ts → lib/*.js
-npm test               # 构建 + 全链测试（147 项安全套件 + modern 策略 + 冒烟与向量）
-npm run verify:clean   # 构建后校验 lib/ 与 src/ 同步（CI 使用）
+# 从 npm 安装
+dsh plugin --profile web add dsh-ui-auth
+
+# 或固定到某个 GitHub 发行版本
+dsh plugin --profile web add github:0QwQ0/dsh-ui-auth#v0.6.2
+
+# 或从本地目录安装（离线 / 二次开发）
+dsh plugin --profile web add <本插件目录的绝对路径>
 ```
 
-> 修改源码后必须提交重新构建的 `lib/*.js`：CI 会校验 `lib/` 与 `src/` 一致，
-> 而 DSH 从仓库读取的正是 `lib/`。
+安装完成后**重启一次面板**生效（bundle 层在启动时应用）。
 
-## 功能
+## 首次登录
 
-- **全接口拦截**：直接包装 DSH 的 `node:http` 服务器，在路由分发之前检查会话，
-  因此 `/api/*`（全部 RPC/SSE/下载）、`/plugins/*`（前端模块）、HMR、SPA fallback
-  以及 `/api/events.mux`、`/api/events.host` 两个 WebSocket 升级通道全部被覆盖，
-  没有旁路。
-  - 未登录：页面请求 302 → `/auth/login`；API/静态资源 401；WS 升级直接销毁连接。
-  - 登录后：原请求原样透传，功能零影响。
-- **登录页**：`/auth/login` 提供自带样式的登录页（中文），登录成功写 `dsh_auth`
-  Cookie（HttpOnly + SameSite=Strict，12 小时滑动续期）。
-- **注册（0.5.0）**：`/auth/register` 注册页——新用户凭**邮箱 + 用户名 + 密码 +
-  有效邀请码**注册（邮箱暂不校验真实性，注册后可在「用户管理」中自行修改；
-  邮箱验证将在后续版本提供）。邀请码由管理员在【用户管理】→【邀请码管理】中
-  生成，可查看每个码的已用/可注册次数与剩余数，可撤销。注册成功即**自动登录**
-  并进入 **TOTP 引导页**（推荐立即添加两步验证令牌，也可跳过稍后添加）。
-- **TOTP 两步验证（0.5.0）**：每个用户可在【用户管理】→「两步验证（TOTP）」
-  中生成密钥并绑定 Google Authenticator / Microsoft Authenticator 等应用
-  （RFC 6238，30 秒步进）。生成后显示**二维码**（扫码添加，由 `qrcode` 库生成
-  SVG）与密钥/otpauth 链接（手动输入）。
-  - **登录（0.5.0）**：启用 TOTP 后登录需两步验证——密码正确后要求输入验证器
-    动态码；也支持**免密 TOTP 登录**（登录页密码留空、只填动态码）。动态码
-    错误计入登录失败锁定（防爆破）。
-  - 注册后未绑定 TOTP 的用户，每次登录页面加载会弹出提醒（可"永久忽略"取消，
-    也可在设置中恢复提醒）。移除令牌需验证当前动态码；管理员可移除任意用户的令牌。
-- **用户管理**（设置面板「用户管理」，需登录后可见）：
-  - 所有用户：修改自己的昵称、邮箱与密码；管理自己的 TOTP 令牌；
-  - 管理员：新增/删除用户、重置他人密码、切换角色、**管理邀请码**（生成/撤销、
-    查看使用与剩余数）、移除任意用户的 TOTP；**任何人无法查看他人当前密码**。
-  - 保护规则：不能删除/降级最后一个管理员、不能删除自己、改密/删除后其他会话立即失效。
-  - 角色列显示为简短徽章（「管理」/「用户」），避免长文本换行。
-- **模型配置页仅管理员**（【设置】→【模型】，含模型与 API Key 配置）：
-  - 服务端强制（安全边界）：非管理员会话对 `settings.*`（`llm-*` / `settings.models`
-    命名空间）、`credentials.set/unset`、`llm.discoverModels` 一律 403，绕过 UI
-    直调 API 也无法配置；放行的 `/api` 请求体完整无损转发。
-  - 客户端：普通用户「模型」页内容被替换为「仅管理员可访问」提示（`priority:-1`
-    成为内容区胜者），并隐藏出厂「模型」导航行（设置导航按原始 entries 不去重，
-    按设置面板导航位次隐藏出厂行；若部署新增 `order<10` 的设置页会位移，需调整
-    `lib/client.js` 中的 `nth-child(2)` 选择器）。管理员不注入，保留原页面。
-- **数据隔离（按登录用户）**：DSH 本身是单用户应用，会话/工作区为机器级数据；
-  本插件按登录用户隔离，覆盖 REST/列表接口与 WebSocket 事件流：
-  - 会话/工作区在创建时打标归属（`session.create/fork`、`workspace.create`）；
-  - 普通用户只见自己的 `session.list` / `session.search` / `workspace.list`
-    （响应侧过滤，含工作区内会话与归档会话）；
-  - 直连访问非属主会话/工作区（`session.history/prompt/rename/…`、
-    `workspace.*`）返回 403；`session.export` 仅限属主；
-  - **事件流（0.4.0）**：`/api/events.mux`、`/api/events.host` 的 WebSocket
-    升级由网关代理——每用户一条事件流，帧按会话/工作区归属逐帧过滤后转发，
-    普通用户在**网络层**就收不到他人会话的事件帧（浏览器控制台同样看不到）；
-    无归属维度的 `host/remote-event` 帧仅管理员可见；不再需要反向代理做
-    事件流隔离（依赖 DSH 的 `ctx.apiProxy` 服务，缺失时该通道 fail-closed）。
-  - 管理员不受限（可见全部数据）；本功能启用前的旧数据默认归管理员。
-- **安全细节**：密码 PBKDF2-HMAC-SHA256（每用户随机盐，60000 轮，常量时间比较）；
-  密码策略：**至少 8 位且包含两种及以上字符类型**（大写/小写字母、数字、符号）；
-  令牌/盐使用 Web Crypto 强熵；单 IP 连续 5 次登录失败锁定 30 秒（阈值与时长可用
-  环境变量调整，见「配置」）；所有认证响应 `Cache-Control: no-store`。
-- **Cookie Secure（0.5.1）**：TLS 直连或（仅当 `DSH_AUTH_TRUST_PROXY=1` 时）
-  `X-Forwarded-Proto: https` 的安全通道下，`dsh_auth` Cookie 自动追加 `Secure`
-  标志；HTTP 内网调试不受影响。
-- **会话哈希落盘（0.5.1）**：`dsh-ui-auth-sessions.json` 只保存会话 Token 的
-  SHA-256 哈希（64 位 hex），磁盘不再出现明文 Token；**升级到 0.5.1 后旧版明文
-  会话记录不再恢复，所有用户需重新登录一次**。
-- **引导文件自毁（0.5.1）**：首次登录后任意用户改密成功即自动删除
-  `dsh-ui-auth-bootstrap.txt`（明文初始密码不再长期残留）。
+用户表为空时，插件会自动创建管理员 `admin`，随机密码同时输出到两处：
+
+1. 面板控制台日志（以 `[dsh-ui-auth]` 开头）；
+2. 面板进程工作目录下的 `dsh-ui-auth-bootstrap.txt`。
+
+打开面板会跳转到 `/auth/login`，用 `admin` 与上述随机密码登录。
+**登录后请立即在【设置】→【用户管理】中修改密码**；任意用户改密成功后，引导文件会自动删除。
+
+## 使用指南
+
+### 设置面板 → 用户管理
+
+- **所有用户**：修改自己的昵称、邮箱、密码；绑定/移除自己的 TOTP 令牌；开关两步验证。
+- **管理员**：新增/删除用户、重置他人密码、切换角色、生成与撤销邀请码（可查看每个码的
+  已用次数与剩余次数）、移除任意用户的 TOTP。
+- **保护规则**：不能删除或降级最后一个管理员，不能删除自己；改密或删除用户后，其其他会话立即失效。
+
+### 注册与邀请码
+
+注册入口在登录页的「注册账号」。新用户需要管理员事先在【用户管理】→【邀请码管理】中生成的**有效邀请码**；
+每个码可设置 1–100 次的注册次数，可随时撤销。邮箱目前只做格式填写、不校验真实性，注册后可在用户管理中修改。
+
+### 两步验证（TOTP）
+
+在【用户管理】→「两步验证（TOTP）」生成密钥，用验证器 App 扫码（或手动输入密钥 / otpauth 链接）后
+输入 6 位动态码完成绑定。绑定后默认**不强制**两步验证，可用同一张卡片的开关启用或关闭：
+
+- 开启后：登录需「密码 + 动态码」；也支持密码留空、只填动态码登录。动态码错误同样计入失败锁定。
+- 未绑定令牌的用户每次登录会被提醒（可「永久忽略」，也可在设置中恢复提醒）。
+- 移除令牌需要当前动态码；管理员可移除任意用户的令牌。
+
+### 模型页与密钥
+
+【设置】→【模型】（含模型选择与 API Key 配置）**仅管理员可用**：
+
+- 服务端强制：普通用户对模型/密钥相关接口（`settings.*` 的 LLM 命名空间、`credentials.set/unset`、
+  `llm.discoverModels`）一律返回 403，绕过 UI 直调 API 同样被拒；
+- 客户端：普通用户的「模型」页显示「仅管理员可访问」，并隐藏出厂的「模型」导航行。
+
+### 数据隔离
+
+DSH 本身按单用户设计（会话、工作区是机器级数据）。本插件按**登录用户**隔离：
+
+- 会话/工作区创建时记录归属；列表与搜索接口在响应侧过滤（含工作区内会话与归档会话）；
+- 直接访问非属主对象（如他人的会话内容、重命名、提示词）返回 403；会话导出仅限属主；
+- WebSocket 事件流按归属逐帧过滤——普通用户在**网络层**就收不到他人会话的事件帧，浏览器控制台同样看不到；
+- 管理员可见全部数据；插件启用**之前**已存在的旧数据默认归管理员。
 
 ## 界面预览
 
@@ -117,147 +110,122 @@ npm run verify:clean   # 构建后校验 lib/ 与 src/ 同步（CI 使用）
 |---|---|
 | ![登录页](assets/screenshot-login.png) | ![注册页](assets/screenshot-register.png) |
 
-| 注册成功引导页（TOTP） | 用户管理页 |
+| 注册成功引导页（绑定 TOTP） | 用户管理页 |
 |---|---|
 | ![注册引导页](assets/screenshot-guide.png) | ![用户管理页](assets/screenshot-users.png) |
 
-## 持久化
-
-- 用户数据存于 DSH 的 credentials 服务（`~/.dsh/.credentials.yaml`，每用户一条
-  `dsh-auth/<用户名>` 记录），重启后用户、角色、资料、密码、TOTP 绑定全部保留；
-  邀请码存于 `dsh-auth/invites` 记录，TOTP 密钥（base32）随用户记录持久化。
-- **会话（0.4.0）**：登录会话定期落盘到 fs 服务工作目录的
-  `dsh-ui-auth-sessions.json`，**重启面板后未过期会话免登录恢复**（0.5.1 起磁盘只存
-  会话 token 的 SHA-256 哈希，不再有明文 token；过期/登出/改密后即失效）。
-- **审计（0.4.0）**：管理员操作（增删用户、重置密码、改角色、改密）与普通用户
-  越权尝试写入 fs 服务工作目录的 `dsh-ui-auth-audit.jsonl`（JSONL，每行含
-  `t`/`actor`/`action`/`target` 等字段），便于事后追溯。
-
-## 首次启动
-
-用户表为空时自动创建管理员 `admin`，随机密码写入：
-1. 宿主控制台日志（`[dsh-ui-auth]` 前缀）；
-2. 进程工作目录下的 `dsh-ui-auth-bootstrap.txt`。
-
-请登录后立即修改该密码并删除引导文件。
-
-## 安装（推荐：`dsh plugin add`，归一化 bundle 机制）
-
-本包声明了 `dsh.bundle.patch`（`cordis.patch.yml`）与 `dsh.client`，是标准的
-profile bundle 层。`dsh plugin` 会自动把声明了 `dsh.bundle` 的依赖加入
-`dsh.profile.bundles` 名单，卸载时自动移除——安装/卸载零手工残留。
-
-```bash
-# 本地 link 安装
-dsh plugin --profile web add "link:F:/aura/pluginDev/dsh-ui-auth"
-
-# 或 registry 安装（发布后）
-dsh plugin --profile web add dsh-ui-auth
-```
-
-运行时依赖：`qrcode`（生成 TOTP 绑定二维码）与 `ws`（0.1.2+ 的 `/api/remote.mux` 流 mux 客户端实现），
-两者都是纯 JS、无必需原生依赖；`dsh plugin add` 会自动安装；本地 link 安装后如提示缺少依赖，
-在插件目录执行一次 `npm install`（`ws` 通常也可经 DSH 自身的安装体回退解析）。
-
-bundle 层在**启动时**应用（挂载 Host 网关 + 发现客户端模块），因此首次安装需
-重启一次面板生效。
-
-## 卸载（完全恢复安装前状态）
-
-```bash
-dsh plugin --profile web remove dsh-ui-auth
-# 重启面板后，网关、设置面板、客户端模块全部消失，profile 配置（dependencies、
-# dsh.profile.bundles、lockfile）已还原；若 node_modules 残留悬空链接，可执行
-# pnpm install 清理。
-```
-
-**完全清空数据（可选）**：卸载不会自动删除用户数据（防误删）。要恢复"安装前的
-原样"，手动删除 `~/.dsh/.credentials.yaml` 中 `dsh-auth:` 下的记录（用户 + 归属表），
-并删除进程工作目录下的 `dsh-ui-auth-bootstrap.txt`（首次启动生成的引导文件，若存在）。
-
-> 早期版本用手动 `cordis.patch.yml` 补丁行挂载；0.3.1 起统一为 bundle 机制。
-> 若你仍在使用补丁行方式，升级后请删除 profile `cordis.patch.yml` 里的
-> `dsh-ui-auth` 行，改用上面的 `dsh plugin add`。
-
-## 配置（可选，环境变量）
+## 配置（可选环境变量）
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `DSH_AUTH_MAX_FAILS` | `5` | 单来源连续登录失败锁定阈值（正整数；非法值回退默认） |
-| `DSH_AUTH_LOCK_MS` | `30000` | 锁定持续时间毫秒 |
-| `DSH_AUTH_TRUST_PROXY` | 关 | 设为 `1`/`true`/`yes` 时信任 `X-Forwarded-For`（**取最右**——最近受信反代追加的地址，客户端无法伪造；同时信任 `X-Forwarded-Proto` 用于 Secure Cookie）。**仅在 HTTPS 反向代理后开启**——默认不信任，防止未配置反代时伪造 XFF 绕过/污染限流 |
+| `DSH_AUTH_LOCK_MS` | `30000` | 锁定持续时间（毫秒） |
+| `DSH_AUTH_TRUST_PROXY` | 关 | 设为 `1`/`true`/`yes` 时信任 `X-Forwarded-For`（**取最右**，即最近一层受信代理追加的地址，客户端无法伪造）与 `X-Forwarded-Proto`（用于 Secure Cookie）。**仅在 HTTPS 反向代理之后开启**；默认不信任，避免未配置代理时伪造请求头绕过或污染限流 |
 
-面板进程启动时读取，改环境变量后重启面板生效。示例（PowerShell）：
+面板进程启动时读取，修改后需重启面板。示例：
 
 ```powershell
 $env:DSH_AUTH_MAX_FAILS = '10'; $env:DSH_AUTH_LOCK_MS = '60000'; $env:DSH_AUTH_TRUST_PROXY = '1'
 ```
 
-## 已知边界 / 建议
+```bash
+export DSH_AUTH_MAX_FAILS=10 DSH_AUTH_LOCK_MS=60000 DSH_AUTH_TRUST_PROXY=1
+```
 
-- 公网安全验证详见 [SECURITY.md](SECURITY.md)（威胁模型、75 项安全用例矩阵、
-  OWASP Top 10 覆盖率、残余风险与部署加固清单）；本地复现：`node test/security-suite.mjs`。
-- Secure Cookie（0.5.1）：TLS 直连或（仅在信任反代时）`X-Forwarded-Proto: https`
-  下，`dsh_auth` Cookie 自动追加 `Secure`。公网部署仍建议放在 HTTPS 反向代理之后、
-  由代理终结 TLS 并保留 Host，DSH 自身按 `127.0.0.1` 或内网监听。
-- 登录限流按来源 IP（默认 `req.socket.remoteAddress`）：反向代理场景下会聚合为代理
-  的 IP，可设置 `DSH_AUTH_TRUST_PROXY=1` 改按 `X-Forwarded-For` 真实客户端计数
-  （见「配置」）。
-- 会话有持久化（见「持久化」）：重启面板后未过期会话自动恢复；升级到 0.5.1+
-  时旧版明文会话记录失效一次，所有用户需重新登录。
-- 与 DSH 自带的 `/api` DNS-rebinding 信任栅栏叠加使用：该栅栏“明确不是认证”，
-  本插件才是真正的前置认证层。
+## 数据与持久化
 
-## DSH STORE 上架声明（0.5.2）
+| 内容 | 位置 | 说明 |
+|---|---|---|
+| 用户、角色、资料、密码哈希、TOTP 密钥、邀请码 | DSH 凭据库 `~/.dsh/.credentials.yaml` 中的 `dsh-auth/*` 记录 | 重启后保留；**不保存明文密码** |
+| 登录会话 | 面板进程工作目录下的 `dsh-ui-auth-sessions.json` | 只存 Token 的 SHA-256 哈希；未过期会话重启后免登录恢复 |
+| 审计日志 | 面板进程工作目录下的 `dsh-ui-auth-audit.jsonl` | JSONL，每行含时间、操作者、动作、目标等字段 |
+| 首次启动引导文件 | 面板进程工作目录下的 `dsh-ui-auth-bootstrap.txt` | 任一用户改密成功后自动删除 |
 
-- **兼容性声明**：manifest `package.json` 的 `dsh.compatibility` 声明 DSH 范围
-  `>=0.1.1-rc.2 <0.2.0` 与逐版本矩阵（精确 `compatible`：`0.1.1-rc.2`，其余未验证
-  版本保持 `unknown`）；`engines.node` 声明 `>=22.19.0`。
-- **依赖/权限/外部服务/失败边界**：完整作者侧证据与声明见
-  [docs/STORE-EVIDENCE.md](docs/STORE-EVIDENCE.md)（一次性 Profile 的
-  install/start/uninstall 实录、`qrcode` 依赖说明、权限表、无外部服务、失败边界）。
-- 本插件属**凭据/网络能力类**（登录保护必须读写凭据并接管宿主 HTTP/WS 入口），
-  自动 `source-verified` 通道按设计不适用，应按 `user-reviewed` 人工审查路径评估；
-  本地契约自检：`npm run store:check`。
+**备份**：备份 `~/.dsh/.credentials.yaml` 即可保留全部账号数据。
 
-## 自动发布到 npm（GitHub Actions）
+**彻底清空**：删除 `~/.dsh/.credentials.yaml` 中 `dsh-auth:` 下的记录，并删除上述工作目录里的
+`dsh-ui-auth-sessions.json`、`dsh-ui-auth-audit.jsonl` 与 `dsh-ui-auth-bootstrap.txt`，然后重启面板
+（用户表为空时会重新生成新的管理员与随机密码）。
 
-[`.github/workflows/npm-publish.yml`](.github/workflows/npm-publish.yml) 以 GitHub 官方
-"Publish Node.js Package" 模板为骨架，并加了**定时同步**与幂等保护：
-
-| 触发 | 行为 |
-|---|---|
-| `release: published` | 发布该 Release（模板行为） |
-| `schedule`（每天 03:17 UTC） | 取**最新 Release**，若其版本尚未在 npm 则补发布 |
-| `workflow_dispatch` | 手动补发布 |
-
-流程要点：
-
-1. `build` job 先跑 `npm ci --omit=dev` + `npm test`（147 项安全套件 + modern 策略回归）；
-2. `publish-npm` job 解析最新 Release tag，**校验 tag 与 `package.json` 版本一致**（不一致直接失败，
-   避免发布与 Release 不符的代码），再 `npm view` 判断该版本是否已在 npm（已存在则幂等跳过）；
-3. 需要发布时执行 `npm publish --provenance --access public`；
-   `npm publish` 会触发 `prepack`（= `npm test`），因此**在目标 tag 上再跑一遍完整测试**；
-4. 用 `concurrency: npm-publish` 串行化，避免并发重复发布。
-
-### 前置配置（一次性）
-
-仓库 **Settings → Secrets and variables → Actions → New repository secret** 添加：
-
-- 名称：`NPM_TOKEN`
-- 值：npmjs.com 生成的 **Granular Access Token** —— Packages: **Read and write**、
-  Scope 限定 `dsh-ui-auth`，并**打开 "Bypass 2FA when using this token"**
-  （否则发布会被 2FA 拦下；见 0.5.2/0.6.1 发布时的实际报错）
-
-未配置该 Secret 时，需要发布的运行会**明确失败并提示**（不会静默跳过）。
-
-> 也可改用 npm **Trusted Publishing（OIDC）**：在 npmjs.com 为本仓库 + 本 workflow 配置
-> Trusted Publisher 后，删除 `Publish` 步骤的 `NODE_AUTH_TOKEN` 环境变量即可无需任何 secret
-> （workflow 已声明 `id-token: write`）。
-
-### 手动补发布
+## 卸载
 
 ```bash
-gh workflow run npm-publish.yml          # 或在 Actions 页面点 Run workflow
-gh run list --workflow=npm-publish.yml   # 查看运行结果
+dsh plugin --profile web remove dsh-ui-auth
+# 重启面板后网关、设置面板与客户端模块全部消失；profile 的依赖与 bundle 名单自动还原
 ```
+
+卸载**不会**删除账号数据（防误删）；如需一并清空，见上一节。
+
+## 安全说明与已知边界
+
+- **密码与会话**：PBKDF2-HMAC-SHA256（随机盐、60000 轮、常量时间比较）；密码策略为
+  「≥8 位且至少两种字符类型」；会话 Token 仅以 SHA-256 哈希落盘，登出、改密或删除用户后相关会话立即失效。
+- **Cookie**：`dsh_auth` 为 HttpOnly + SameSite=Strict；在 TLS 直连或（仅在信任反代时）
+  `X-Forwarded-Proto: https` 的通道下自动追加 `Secure`。
+- **公网部署建议**：放在 HTTPS 反向代理之后，由代理终结 TLS 并保留 Host；DSH 自身可监听
+  `127.0.0.1` 或内网。反代场景请按上文开启 `DSH_AUTH_TRUST_PROXY=1`，否则限流会按代理 IP 聚合。
+- **会话持久化带来「记住登录」**：未过期的会话在面板重启后自动恢复；若你的安全要求是每次重启都必须重新登录，
+  可在停止面板后删除 `dsh-ui-auth-sessions.json`。
+- **升级提示**：从 0.5.1 之前的版本升级时，旧版**明文**会话记录不再恢复，所有用户需要重新登录一次。
+- **与 DSH 自带机制的关系**：DSH 对 `/api` 的 DNS-rebinding 信任栅栏**明确不是认证**；
+  本插件才是前置认证层，两者叠加使用。
+- **隔离强度的上限**：本插件按登录用户隔离 DSH 的会话/工作区数据；它不改变 DSH 自身的进程权限模型，
+  也不能隔离第三方插件自己的数据。多租户级别的强隔离需要 DSH 侧的支持。
+- 更完整的安全分析（威胁模型、用例矩阵、残余风险与部署加固清单）见 [SECURITY.md](SECURITY.md)。
+
+## DSH 版本兼容性
+
+同一份代码按能力探测自动选择传输适配，无需配置：
+
+| DSH 版本 | 传输线 | 说明 |
+|---|---|---|
+| `0.1.1-rc.2` | legacy | dotted `/api/<a>.<b>` RPC 与 `apiProxy` 事件流，历史行为保持不变 |
+| `0.1.2-rc.1` ~ `0.1.5-rc.1` | modern | 斜杠 RPC `/api/<ns>/<method>`、`/api/remote.mux` 流式通道与原生浏览器会话门 |
+
+modern 传输线为安全起见对普通用户**更严格**：不能创建 workspace（工作区目录属部署方能力），
+也不能写入任何设置命名空间；需要放开时可由宿主插件通过 `uiAuth` 接口登记策略。
+端点清单、收紧项与验证证据见 [docs/DSH-0.1.5-COMPATIBILITY.md](docs/DSH-0.1.5-COMPATIBILITY.md)。
+
+## 常见问题
+
+**忘记管理员密码怎么办？**
+删除 `~/.dsh/.credentials.yaml` 中 `dsh-auth/admin`（及其对应的哈希记录），重启面板后会重新生成 `admin`
+与新的随机密码（原账号的 TOTP 与资料会丢失）。其他用户的密码可由管理员在用户管理中重置。
+
+**重启面板后需要重新登录吗？**
+不需要。未过期的会话会自动恢复；只有在从 0.5.1 之前的版本升级时，旧会话记录会失效一次。
+
+**普通用户看不到「模型」页，是故障吗？**
+不是，这是设计：模型与 API Key 仅管理员可配置，服务端与界面同时强制。
+
+**登录限流把所有人都算成同一个来源？**
+说明面板前面有反向代理。按上文开启 `DSH_AUTH_TRUST_PROXY=1`，限流将按真实客户端 IP 计数。
+
+**邀请码用完了 / 想关闭注册？**
+注册必须持有效邀请码，因此不生成邀请码即等于关闭注册；管理员可随时生成或撤销。
+
+**可以只要认证、不做数据隔离吗？**
+当前版本始终启用按用户隔离。需要自定义策略的部署可通过宿主插件调用 `uiAuth` 接口（见兼容性文档）。
+
+## 开发
+
+源码为 TypeScript，构建产物一并提交（DSH 直接读取仓库，因此**运行与安装不需要构建**）：
+
+```bash
+npm ci                 # 安装开发依赖（typescript / esbuild / @types/*）
+npm run typecheck      # 宿主与客户端两套 tsconfig 的严格类型检查
+npm run build          # src/*.ts → lib/*.js
+npm test               # 构建 + 全链测试（安全套件、策略回归、冒烟与向量）
+npm run verify:clean   # 校验 lib/ 与 src/ 一致（修改源码后需提交重新构建的产物）
+```
+
+| 源码 | 产物 | 说明 |
+|---|---|---|
+| `src/index.ts` | `lib/index.js` | 宿主：网关、认证、用户管理、审计 |
+| `src/modern-gateway.ts` | `lib/modern-gateway.js` | DSH 0.1.2+ 传输适配 |
+| `src/modern-policy.ts` | `lib/modern-policy.js` | 端点授权与数据过滤策略 |
+| `src/client.ts` | `lib/client.js` | 设置面板客户端（由 `build/client.mjs` 打成 DSH 客户端契约） |
+
+更多文档：[兼容性与隔离策略](docs/DSH-0.1.5-COMPATIBILITY.md) ·
+[安全审计与测试证据](docs/STORE-EVIDENCE.md) · [发布流程（维护者）](docs/PUBLISHING.md) ·
+[变更记录](CHANGELOG.md) · [MIT 许可证](LICENSE)
