@@ -136,7 +136,7 @@ DSH_LEGACY_URL=http://127.0.0.1:3080 node test/live-legacy-check.mjs
 
 | 验证项 | 结果 |
 |---|---|
-| `npm test`（离线全链） | 安全套件 **147/147**、modern 策略 **13/13**、host-smoke（含通行密钥 16 项）、client-smoke（含通行密钥 9 项）、登录页/端点 **18/18** —— 全绿 |
+| `npm test`（离线全链） | 安全套件 **147/147**、modern 策略 **13/13**、host-smoke（含通行密钥 16 项）、client-smoke（含通行密钥 9 项）、登录页/端点 **24/24** —— 全绿 |
 | 隔离 0.1.5-rc.1 实例：通行密钥端到端（真实 Chrome + CDP 虚拟认证器） | **27/27** —— 注册（`residentKey=required` + UV）、免用户名登录（可发现凭据）、计数器推进、2FA 第二步走通行密钥断言、反锁死拒删、结束复位 |
 | 隔离 0.1.5-rc.1 实例：HTTP/unary 与授权面（`live-015-check`） | **28/28** |
 | 隔离 0.1.5-rc.1 实例：`/api/remote.mux` 流与逐帧隔离（`live-015-mux`） | **12/12** |
