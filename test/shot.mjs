@@ -59,9 +59,10 @@ const rpcInPage = (method, body) => page.evaluate((m, b) => fetch(`/auth/rpc/${m
 
 // 登录后宿主/插件可能会弹出提醒或引导层；它们会盖住要截图的目标，必须真正清掉再拍。
 // 注意：不能按“关闭”这类通用文案乱点——设置对话框自己的关闭按钮也叫「关闭」。
-const OVERLAY_TEXTS = ['继续', '我明白了', '知道了', '我知道了', '开始使用', '稍后再说', '跳过', '好的']
+// 全新 DSH 实例的 API Key 配置引导用「稍后配置」关闭（用户报告过它盖住截图目标）。
+const OVERLAY_TEXTS = ['稍后配置', '稍后设置', '跳过配置', '稍后再说', '继续', '我明白了', '知道了', '我知道了', '开始使用', '跳过', '好的']
 async function dismissOverlays() {
-  for (let round = 0; round < 4; round++) {
+  for (let round = 0; round < 5; round++) {
     const closed = await page.evaluate((texts) => {
       const done = []
       // 1) 我们自己的登录提醒弹窗：会话标记 + 直接移除，双保险
@@ -72,7 +73,8 @@ async function dismissOverlays() {
       const settingsDialog = document.querySelector('[role=dialog]')
       const overlays = [...document.querySelectorAll('div')].filter((element) => {
         const style = getComputedStyle(element)
-        if (style.position !== 'fixed') return false
+        if (style.position !== 'fixed' && style.position !== 'absolute') return false
+        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) < 0.05) return false
         if (element === settingsDialog || (settingsDialog !== null && settingsDialog.contains(element))) return false
         const rect = element.getBoundingClientRect()
         return rect.width >= innerWidth * 0.8 && rect.height >= innerHeight * 0.8
@@ -89,25 +91,34 @@ async function dismissOverlays() {
     }, OVERLAY_TEXTS)
     if (closed.length === 0) return
     console.log('  关闭覆盖层:', closed.join(', '))
-    await wait(700)
+    await wait(900)
   }
 }
 
-/** 截前状态：自家提醒弹窗是否已关闭、是否还有可见的全屏弹窗（会盖住目标）。 */
+/** 截前状态：自家提醒弹窗是否已关闭、屏幕上还有哪些全屏弹窗及其按钮文案。 */
 async function overlayState() {
   return page.evaluate(() => {
-    const buttonTexts = /继续|稍后再说|知道了|我知道了|开始使用|跳过|好的/
-    const visiblePopups = [...document.querySelectorAll('div')].filter((element) => {
+    const popups = []
+    const candidates = [...document.querySelectorAll('div')]
+    const settingsDialog = document.querySelector('[role=dialog]')
+    for (const element of candidates) {
       const style = getComputedStyle(element)
-      if (style.position !== 'fixed' && style.position !== 'absolute') return false
-      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) < 0.05) return false
+      if (style.position !== 'fixed' && style.position !== 'absolute') continue
+      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) < 0.05) continue
       const rect = element.getBoundingClientRect()
-      if (rect.width < window.innerWidth * 0.8 || rect.height < window.innerHeight * 0.8) return false
-      return buttonTexts.test(element.textContent || '')
-    }).length
+      if (rect.width < window.innerWidth * 0.8 || rect.height < window.innerHeight * 0.8) continue
+      const buttons = [...element.querySelectorAll('button,[role=button]')]
+        .map((button) => (button.textContent || button.getAttribute('aria-label') || '').trim()).filter(Boolean)
+        .filter((label, index, all) => all.indexOf(label) === index)
+      if (buttons.length === 0) continue
+      const isSettings = settingsDialog !== null && (element === settingsDialog || element.contains(settingsDialog))
+      popups.push({ isSettings, buttons: buttons.slice(0, 6) })
+    }
+    // 设置对话框自身的按钮不算"遮挡层"
+    const blocking = popups.filter((popup) => !popup.isSettings)
     return {
       ownReminder: document.getElementById('dshua-totp-reminder') !== null,
-      visiblePopups,
+      blocking: blocking.map((popup) => popup.buttons.join(' / ')),
     }
   })
 }
@@ -191,7 +202,7 @@ try {
   await root.scrollIntoView()
   await wait(400)
   const usersState = await overlayState()
-  console.log(`用户管理页截前状态：自家提醒弹窗=${usersState.ownReminder ? '仍存在（异常）' : '已关闭'}，其它可见弹窗=${usersState.visiblePopups}`)
+  console.log(`用户管理页截前状态：自家提醒弹窗=${usersState.ownReminder ? '仍存在（异常）' : '已关闭'}，遮挡层=${usersState.blocking.length === 0 ? '无' : usersState.blocking.join(' | ')}`)
   await shot(root, 'screenshot-users.png')
 
   // 4) 通行密钥卡片（未绑定状态：显示两个添加入口）
@@ -206,7 +217,7 @@ try {
     await element.evaluate((node) => node.scrollIntoView({ block: 'center' }))
     await wait(400)
     const cardState = await overlayState()
-    console.log(`通行密钥卡片截前状态：自家提醒弹窗=${cardState.ownReminder ? '仍存在（异常）' : '已关闭'}，其它可见弹窗=${cardState.visiblePopups}`)
+    console.log(`通行密钥卡片截前状态：自家提醒弹窗=${cardState.ownReminder ? '仍存在（异常）' : '已关闭'}，遮挡层=${cardState.blocking.length === 0 ? '无' : cardState.blocking.join(' | ')}`)
     await shot(element, 'screenshot-passkey.png')
   }
 
