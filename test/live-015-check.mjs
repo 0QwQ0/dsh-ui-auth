@@ -128,7 +128,6 @@ for (const [endpoint, args] of [
   ['workspace/create', { request: { path: '/tmp/anything' } }],
   ['commands/execute', { agentId: 'x', line: '/help', submittedAttachments: [] }],
   ['dynamicCordisRunner/inventory', {}],
-  ['pluginInventory/list', {}],
   ['directoryPicker/list', {}],
   ['session/openWorkspacePath', { request: { path: '/etc/passwd' } }],
   ['subagents/list', { parentSessionId: 'x' }],
@@ -136,6 +135,13 @@ for (const [endpoint, args] of [
   const response = await remote(user.cookie, endpoint, args)
   check(`普通用户 ${endpoint} → 403（deny-by-default）`, response.status === 403, String(response.status))
 }
+
+// 0.6.5：只读清单类端点放行（设置页加载依赖），写操作仍然拒绝。
+const pluginInventory = await remote(user.cookie, 'pluginInventory/list', {})
+check('普通用户 pluginInventory/list → 200（只读插件清单）',
+  pluginInventory.status === 200 && pluginInventory.envelope?.result?.ok === true, String(pluginInventory.status))
+const pluginInstall = await remote(user.cookie, 'pluginInventory/install', { name: 'probe' })
+check('普通用户 pluginInventory/install → 403（安装/卸载不在白名单）', pluginInstall.status === 403, String(pluginInstall.status))
 
 const unknown = await remote(user.cookie, 'future/endpoint', {})
 check('普通用户未审查端点 → 403', unknown.status === 403, String(unknown.status))

@@ -298,9 +298,9 @@ DSH_SUITE_VERBOSE=1 node test/security-suite.mjs   # Windows: $env:DSH_SUITE_VER
 | SEC-02 | 低 | `safeNext` 正则 `[?&]next=` 无法匹配查询串**首参**（`?next=/settings` 经 `split('?')` 后 q 无前导 `?`），合法站内 next 被丢弃、登录后总是跳 `/`；客户端侧 `okPath` 兜底掩盖了该缺陷 | 0.3.4：正则改为 `(?:^|[?&])next=`，首参与多参数均正确解析，且保留原有外站/协议/双斜杠拒绝逻辑 |
 | SEC-03 | 中 | **事件流信息泄露（审查发现）**：`/api/events.mux`、`/api/events.host` 只做认证放行，普通用户连接后会在网络层收到**全部会话**的事件帧（UI 不渲染 ≠ 收不到，浏览器控制台可读他人会话内容） | 0.4.0：升级通道改由网关代理——每用户一条事件流，帧按会话/工作区归属逐帧过滤（含数组帧逐元素过滤、remote-event 仅管理员）；apiProxy 缺失时 fail-closed；反向代理事件流隔离不再需要 |
 | SEC-04 | 低 | 0.6.4 开发中：登录页内联脚本存在括号错误，整个 `(function(){…})()` 解析失败——表现是点击登录退化为浏览器原生表单提交（凭据出现在地址栏与浏览器历史里），通行密钥入口也静默消失 | 0.6.4：脚本改为命名函数结构并新增 `test/login-page-check.mjs`——它把服务端渲染出的内联脚本送进 `vm.Script` 解析，脚本一旦不可解析即失败，同时断言通行密钥入口与提示按地址正确渲染 |
-| SEC-05 | 低 | 0.6.5 修复：modern 线（0.1.2+）把 `agentPresets/*` 整体按 deny-by-default 拒绝，导致普通用户的【Agent 预设】设置页整页显示「无法加载 Agent 预设」（该页加载时先取预设清单）。属**可用性缺口**：被误拒的是只读元数据，不是应当保护的写操作 | 0.6.5：只放行只读的 `agentPresets/list` 与按会话属主校验的 `agentPresets/read`、`agentPresets/select`；`copy`/`deletePreset`（会写出可挂载插件与提示词的预设组合，属提权面）仍限管理员。新增 `test/live-presets-check.mjs`（HTTP + 真实浏览器 14 项）与策略单测防回归，并审计其余设置页，把仍有意的收紧项逐条写入兼容性文档的「已知边界」 |
+| SEC-05 | 低 | 0.6.5 修复：modern 线（0.1.2+）把 `agentPresets/*` 与 `pluginInventory/*` 整体按 deny-by-default 拒绝，导致普通用户的【Agent 预设】整页显示「无法加载 Agent 预设」、【插件】显示「暂时无法读取插件」（两页在加载时都会先取清单）。属**可用性缺口**：被误拒的是只读元数据，不是应当保护的写操作 | 0.6.5：只放行只读清单 `agentPresets/list`、`pluginInventory/list` 与按会话属主校验的 `agentPresets/read`、`agentPresets/select`；`agentPresets/{copy,deletePreset}`（预设会组装插件与提示词）与 `pluginInventory/{install,uninstall,enable,disable,update}` 仍限管理员。新增 `test/live-user-pages-check.mjs`（HTTP + 真实浏览器 **24 项**）、策略单测（**15 项**）与 `live-015-check` 对应断言（**29 项**）防回归，并把仍有意收紧的设置项逐条写入兼容性文档的「已知边界」 |
 
-修复后安全套件 147/147、modern 策略 14/14、host-smoke、client-smoke、登录页/端点联通、
+修复后安全套件 147/147、modern 策略 15/15、host-smoke、client-smoke、登录页/端点联通、
 普通用户设置页可用性与通行密钥浏览器级验收全部通过。
 
 ---

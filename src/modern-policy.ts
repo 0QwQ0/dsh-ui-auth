@@ -145,6 +145,9 @@ export function createModernPolicy(owners: OwnershipLookup): ModernPolicy {
       // 只有 copy/deletePreset 会写出新的预设组合（可挂载插件与提示词），仍限管理员。
       if (endpoint === 'agentPresets/list') return true
       if (endpoint === 'agentPresets/read' || endpoint === 'agentPresets/select') return agent(principal, args)
+      // 插件清单：普通用户可以查看本部署已安装的插件（只读），但安装/卸载/插件设置仍限管理员。
+      // 白名单按端点登记，因此宿主后续新增的 pluginInventory/* 写操作默认仍是被拒的。
+      if (endpoint === 'pluginInventory/list') return true
       if (namespace === 'session') {
         if (SESSION_READ.has(method as string)) return true
         if (method === 'page' || method === 'follow') return authorizeSession(args, principal)

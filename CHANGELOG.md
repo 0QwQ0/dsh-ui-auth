@@ -1,31 +1,45 @@
 # Changelog
 
-## 0.6.5 — 修复：modern 线上普通用户的【Agent 预设】页面加载失败
+## 0.6.5 — 修复：modern 线上普通用户的【Agent 预设】与【插件】页面不可用
 
-**现象**：DSH `0.1.2+` 的部署里，普通用户打开【设置】→【Agent 预设】显示
-「无法加载 Agent 预设。」，客户端日志为
-`client api: agentPresets/list failed: transport failure for /api/agentPresets/list: HTTP 403`。
+**现象**（真实用户报告）：DSH `0.1.2+` 的部署里，普通用户的设置面板有两页失败——
 
-**根因**：modern 路径对普通用户是 deny-by-default，而 `agentPresets/*` 被整体拒绝。
-该页面在加载时先取预设清单（新建会话的预设选择器同样依赖它），一处被拒即整页失败。
-这是**只读能力被误拒**，不是设计取舍。
+- 【Agent 预设】显示「无法加载 Agent 预设。」，客户端日志：
+  `client api: agentPresets/list failed: transport failure for /api/agentPresets/list: HTTP 403`；
+- 【插件】显示「暂时无法读取插件。」（`pluginInventory/list` 同样被拒）。
 
-**修复**：放行 `agentPresets/list`，以及 agent 作用域（按会话属主校验）的 `agentPresets/read`
-与 `agentPresets/select`；`agentPresets/copy`、`agentPresets/deletePreset` 会写出新的预设组合
-（预设可挂载插件与提示词，属提权面），继续限管理员。旧版 0.1.1-rc.2（legacy 线）不受影响。
+**根因**：modern 路径对普通用户是 deny-by-default，而 `agentPresets/*` 与 `pluginInventory/*`
+被整体拒绝。这两页在**加载时**先取清单（Agent 预设页还要为新建会话提供预设选择），
+一处被拒即整页失败。被拒的都是**只读元数据**，不是需要保护的写操作——属于白名单过窄的误伤。
 
-**同类排查**：审计了全部设置页客户端 bundle 的加载期调用，除已修复的预设页外，另一处是
-【插件】页（`pluginInventory/list`，被拒后显示「暂时无法读取插件。」）——该项为**有意的收紧**
-（插件清单会暴露部署内部构成），已在兼容性文档的「已知边界」中逐条列明，可由部署方按需放开。
+**修复**（按端点登记白名单，最小权限）：
+
+| 端点 | 普通用户 | 说明 |
+|---|---|---|
+| `agentPresets/list` | ✅ | 预设清单是部署方提供的公开元数据，设置页与新建会话的预设选择器依赖它 |
+| `agentPresets/read`、`agentPresets/select` | ✅（按会话属主校验） | agent 作用域，规则与 `skills/list`、`goals/*` 一致 |
+| `pluginInventory/list` | ✅ | 只读清单：普通用户可以看到本部署安装了哪些插件 |
+| `agentPresets/copy`、`agentPresets/deletePreset` | ❌ 仅管理员 | 预设会组装插件与提示词，**创建预设是提权面** |
+| `pluginInventory/install`、`uninstall`、`enable`、`disable`、`update` | ❌ 仅管理员 | 安装/卸载/启停插件是部署方能力；白名单按端点登记，宿主后续新增的写操作默认仍被拒 |
+| `settings/*`（含插件设置）、`credentials/*` | ❌ 仅管理员 | 部署级配置与密钥 |
+| `settings/open*AgentPresetDirectory`、`settings/canOpenAgentPresetDirectory` | ❌ | 客户端把它们的失败按"该功能不可用"处理，不阻塞页面加载 |
+
+legacy 线（0.1.1-rc.2）不涉及这些命名空间，未改动。
 
 ### 验证（2026-09-16）
 
 | 验证项 | 结果 |
 |---|---|
-| 普通用户视角设置页验收（新增 `test/live-presets-check.mjs`，HTTP + 真实浏览器） | **14/14**：`agentPresets/list` → 200 且页面渲染出预设清单；非属主 agent 的 `read`/`select`、`copy`/`deletePreset` 仍 403；页面无「无法加载」文案、控制台无该端点 403 |
-| modern 策略单测（`test/modern-policy.test.mjs`） | **14/14**（新增预设端点用例） |
-| 隔离 0.1.5-rc.1 回归：HTTP/unary / mux 流 | **28/28** / **12/12** |
-| `npm test`（构建 + 全链）、`typecheck`、`store:check` | 全绿（147/147 + 13/13 + 各冒烟） / 通过 / **20/20** |
+| 普通用户设置页验收（`test/live-user-pages-check.mjs`，HTTP + 真实浏览器） | **24/24**：预设清单与插件清单均 200 且页面渲染成功（无失败文案、控制台无对应 403）；非属主 `read`/`select`、预设 `copy`/`deletePreset`、插件安装/卸载/启停、插件设置写入全部 403 |
+| modern 策略单测（`test/modern-policy.test.mjs`） | **15/15**（新增预设与插件端点用例） |
+| 隔离 0.1.5-rc.1 回归：HTTP/unary / mux 流 | **29/29** / **12/12** |
+| `npm test`（构建 + 全链）、`typecheck`、`store:check` | 全绿（147/147 + 各冒烟） / 通过 / **20/20** |
+
+### 已知边界（仍为有意的收紧，见兼容性文档「已知边界」）
+
+普通用户打开【插件】页里的**单个插件设置**需要 `credentials/*` 或 `settings/*`（部署级配置与密钥），
+这些仍然拒绝；【模型】页同样由客户端替换为提示页。需要放开的部署可用 `uiAuth.registerPolicy()`
+逐条登记。
 
 ## 0.6.4 — 通行密钥（Passkey / WebAuthn）与登录矩阵定稿
 

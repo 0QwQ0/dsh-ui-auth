@@ -47,6 +47,20 @@ test('agent presets: the roster is readable, per-session use is owner-scoped, au
   assert.equal(await policy.authorize({ username: 'root', role: 'admin' }, 'agentPresets/deletePreset', { args: { id: 'p' } }), true)
 })
 
+test('plugin inventory: the installed list is readable, mutating plugin endpoints stay closed', async () => {
+  // 回归：普通用户的【插件】设置页只读清单（安装/卸载不是本项目的 RPC 面，白名单按端点登记）。
+  assert.equal(await policy.authorize(alice, 'pluginInventory/list', { args: {} }), true)
+  for (const method of [
+    'pluginInventory/install',
+    'pluginInventory/uninstall',
+    'pluginInventory/enable',
+    'pluginInventory/disable',
+    'pluginInventory/update',
+  ]) {
+    assert.equal(await policy.authorize(alice, method, { args: { name: 'x' } }), false)
+  }
+})
+
 test('creation requires an owned Workspace and checks cold identity adoption', async () => {
   assert.equal(await policy.authorize(alice, 'session/create', request({ workspaceId: 'wa', sessionId: 'new' })), true)
   assert.equal(await policy.authorize(alice, 'session/create', request({ workspaceId: 'wa', sessionId: 'b' })), false)
@@ -133,16 +147,19 @@ test('host-wide administration stays unreachable for ordinary users', async () =
     'credentials/describe', 'credentials/set', 'credentials/unset',
     'settings/update', 'settings/replace', 'settings/mutate', 'settings/openSettingsDocument',
     'directoryPicker/pick', 'directoryPicker/list', 'directoryPicker/createDirectory',
-    'llm/discoverModels', 'pluginInventory/list', 'agentPresets/read', 'agentPresets/deletePreset',
+    'llm/discoverModels', 'agentPresets/read', 'agentPresets/deletePreset',
     'dynamicCordisRunner/inventory', 'dynamicCordisRunner/invoke', 'dynamicCordisRunner/runHostHalf',
     'session/openWorkspacePath', 'workspace/create', 'commands/execute', 'subagents/list',
   ]) {
     assert.equal(await policy.authorize(alice, endpoint, payload()), false, `${endpoint} must stay closed`)
   }
   // Redacted read-only metadata stays available so the UI can render.
+  // （agentPresets/list 与 pluginInventory/list 自 0.6.5 起属于这一档：只读清单可读，写操作仍拒。）
   assert.equal(await policy.authorize(alice, 'settings/describe', payload()), true)
   assert.equal(await policy.authorize(alice, 'llm/listProviders', payload()), true)
   assert.equal(await policy.authorize(alice, 'session/modelCatalog', payload()), true)
+  assert.equal(await policy.authorize(alice, 'agentPresets/list', payload()), true)
+  assert.equal(await policy.authorize(alice, 'pluginInventory/list', payload()), true)
 })
 
 test('session/list reads the flat _request wire name and is owner-filtered', async () => {

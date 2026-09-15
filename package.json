@@ -34,7 +34,7 @@
     "test:passkey": "node test/live-passkey-check.mjs",
     "docs:matrix": "node build/docs-matrix.mjs --run SECURITY.md",
     "assets": "node test/shot.mjs",
-    "test:presets": "node test/live-presets-check.mjs"
+    "test:pages": "node test/live-user-pages-check.mjs"
   },
   "dsh": {
     "bundle": {
