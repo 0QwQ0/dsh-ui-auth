@@ -62,6 +62,8 @@ Chrome 会抛 `SecurityError: 127.0.0.1 is an invalid domain`（实测 Chrome 15
 - 文档工具：`npm run docs:matrix` 用安全套件的逐项输出重新生成 SECURITY.md 的测试矩阵
   （套件未全绿时拒绝改写文档）；`npm run assets` 在一次性实例上重拍 README 预览图
   （`test/shot.mjs`，环境变量驱动、不写真实账号数据）。
+- 文案：注册成功引导页改为同时介绍**两种第二因子**（TOTP 动态码 / 通行密钥）并说明绑定任一种后
+  如何开启两步验证；登录提醒弹窗同样改为「TOTP 或通行密钥」。
 
 ### 验证（2026-09-16）
 

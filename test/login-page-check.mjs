@@ -49,11 +49,12 @@ const ctx = {
   interval() { return () => {} },
 }
 
-function makeReq(method, url, body, host) {
+function makeReq(method, url, body, host, cookie) {
   const req = new EventEmitter()
   req.method = method
   req.url = url
   req.headers = { host: host ?? 'localhost:3080' }
+  if (cookie !== undefined && cookie !== '') req.headers.cookie = 'dsh_auth=' + cookie
   req.socket = { remoteAddress: '127.0.0.1' }
   req.destroy = () => {}
   const chunks = body !== undefined ? [Buffer.from(body)] : []
@@ -74,9 +75,9 @@ function makeRes() {
   return res
 }
 const settle = (ms = 0) => ms > 0 ? new Promise((r) => setTimeout(r, ms)) : new Promise((r) => setImmediate(r))
-async function call(method, url, body, host, waitMs = 0) {
+async function call(method, url, body, host, waitMs = 0, cookie) {
   const res = makeRes()
-  server.emit('request', makeReq(method, url, body, host), res)
+  server.emit('request', makeReq(method, url, body, host, cookie), res)
   await settle(waitMs)
   return res
 }
@@ -149,6 +150,29 @@ const list = await call('POST', '/auth/rpc/passkeyList', '{}', 'localhost:3080')
 check('未登录 passkeyList → 401', list.status === 401, `status=${list.status}`)
 const scriptMethod = await call('POST', '/auth/passkey/browser.js', '{}')
 check('通行密钥脚本仅允许 GET/HEAD → 405', scriptMethod.status === 405, `status=${scriptMethod.status}`)
+
+// ---- 7) register-success guide page: same inline-script contract, both factors advertised ----
+const bootstrap = fsFiles.get('dsh-ui-auth-bootstrap.txt') ?? ''
+const adminPassword = (/密码:\s+(\S+)/.exec(bootstrap) ?? [])[1]
+check('引导页用例：已取得一次性管理员口令', typeof adminPassword === 'string' && adminPassword !== '')
+
+const login = await call('POST', '/auth/login', JSON.stringify({ username: 'admin', password: adminPassword }), 'localhost:3080')
+const cookieMatch = /dsh_auth=([^;]+)/.exec(login.headers['set-cookie'] ?? '')
+const adminCookie = cookieMatch === null ? '' : cookieMatch[1]
+check('管理员登录成功（用于访问引导页）', login.status === 200 && adminCookie !== '', `status=${login.status}`)
+
+const guide = await call('GET', '/auth/register/success', undefined, 'localhost:3080', 0, adminCookie)
+check('引导页带会话可达（含「立即添加 TOTP」）', guide.status === 200 && guide.body.includes('立即添加 TOTP'), `status=${guide.status}`)
+check('引导页同时介绍通行密钥（第二个因子二选一）',
+  guide.body.includes('通行密钥') && guide.body.includes('Passkey') && guide.body.includes('本机密钥'))
+const guideInline = /<script>([\s\S]*?)<\/script><\/body>/.exec(guide.body)
+check('引导页存在内联脚本', guideInline !== null)
+if (guideInline !== null) {
+  let parsed = true
+  let detail = ''
+  try { new vm.Script(guideInline[1], { filename: 'guide-inline.js' }) } catch (e) { parsed = false; detail = String(e && e.message) }
+  check('引导页内联脚本可解析（括号/语法正确）', parsed, detail)
+}
 
 console.log(failures === 0 ? '\nLOGIN PAGE + PASSKEY ENDPOINT CHECK PASSED' : `\n${failures} CHECK(S) FAILED`)
 process.exit(failures === 0 ? 0 : 1)

@@ -40,6 +40,7 @@ if (/\/\/(\d{1,3}\.){3}\d{1,3}(:|\/|$)/.test(base)) {
 const browser = await puppeteer.launch({ headless: true, defaultViewport: { width: 1280, height: 860 } })
 const page = await browser.newPage()
 const saved = []
+const madeDemoUsers = []
 async function shot(target, name) {
   const file = path.join(ASSETS, name)
   if (target === page) await page.screenshot({ path: file })
@@ -77,20 +78,34 @@ try {
   await page.click('#b')
   await wait(3000)
 
+  // 4) 注册成功引导页（第二个因子二选一：TOTP 或通行密钥）
+  await page.goto(`${base}/auth/register/success`, { waitUntil: 'domcontentloaded' })
+  await wait(900)
+  await shot(page, 'screenshot-guide.png')
+  await page.goto(`${base}/`, { waitUntil: 'domcontentloaded' })
+  await wait(2000)
+
   if (demoUsers) {
-    const list = await rpcInPage('listUsers')
-    const existing = new Set((list.users || []).map((user) => user.username))
-    const wanted = [
-      { username: 'alice', password: 'alice-demo-1234', role: 'user', displayName: 'Alice', email: 'alice@example.com' },
-      { username: 'bob', password: 'bob-demo-1234', role: 'user', displayName: 'Bob', email: '' },
+    const existing = new Set((await rpcInPage('listUsers')).users?.map((user) => user.username) ?? [])
+    // 注意：被删除的用户名会进入永久墓碑（retired-users），无法再次创建，
+    // 因此按候选名单挑前两个真正创建成功的名字，保证重复运行仍有像样的表格。
+    const candidates = [
+      ['alice', 'Alice', 'alice@example.com'],
+      ['bob', 'Bob', ''],
+      ['carol', 'Carol', 'carol@example.com'],
+      ['dave', 'Dave', ''],
+      ['erin', 'Erin', ''],
+      ['frank', 'Frank', ''],
+      ['demo-a', 'Demo A', ''],
+      ['demo-b', 'Demo B', ''],
     ]
-    const made = []
-    for (const user of wanted) {
-      if (existing.has(user.username)) continue
-      const result = await rpcInPage('createUser', user)
-      if (result.ok === true) made.push(user.username)
+    for (const [name, displayName, email] of candidates) {
+      if (madeDemoUsers.length >= 2) break
+      if (existing.has(name)) { madeDemoUsers.push(name); continue }
+      const result = await rpcInPage('createUser', { username: name, password: 'demo-pass-1234', role: 'user', displayName, email })
+      if (result.ok === true) madeDemoUsers.push(name)
     }
-    console.log('演示账号：', made.length > 0 ? `已创建 ${made.join(', ')}` : '已存在，跳过')
+    console.log('演示账号：', madeDemoUsers.length > 0 ? madeDemoUsers.join(', ') : '未能创建（可能都已被占用）')
   }
 
   await page.evaluate(() => {
@@ -104,6 +119,12 @@ try {
 
   const root = await page.$('.dshua')
   if (root === null) throw new Error('未找到「用户管理」页容器（.dshua）')
+  // 打印各表格的表头与行数，便于确认成图内容（脚本不读图）
+  const tableInfo = await page.evaluate(() => [...document.querySelectorAll('.dshua table')].map((table) => ({
+    head: [...table.querySelectorAll('th')].map((th) => (th.textContent || '').trim()).join('|'),
+    rows: [...table.querySelectorAll('tbody tr')].map((tr) => (tr.firstElementChild?.textContent || '').trim()),
+  })))
+  for (const table of tableInfo) console.log(`表格 [${table.head}] ${table.rows.length} 行：${table.rows.join(', ') || '（空）'}`)
   await shot(root, 'screenshot-users.png')
 
   // 4) 通行密钥卡片（未绑定状态：显示两个添加入口）
@@ -115,13 +136,13 @@ try {
   if (element === null) console.log('未找到通行密钥卡片，跳过 screenshot-passkey.png')
   else await shot(element, 'screenshot-passkey.png')
 
-  if (demoUsers) {
+  if (madeDemoUsers.length > 0) {
     const gone = []
-    for (const name of ['alice', 'bob']) {
+    for (const name of madeDemoUsers) {
       const result = await rpcInPage('deleteUser', { username: name })
       if (result.ok === true) gone.push(name)
     }
-    console.log('演示账号清理：', gone.length > 0 ? `已删除 ${gone.join(', ')}` : '无')
+    console.log('演示账号清理：', gone.length > 0 ? `已删除 ${gone.join(', ')}` : '失败（实例上仍保留）')
   }
 } finally {
   await browser.close()
