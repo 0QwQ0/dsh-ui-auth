@@ -3,6 +3,10 @@
 # - schedule           → 每天检查「最新 Release 的版本是否已在 npm」，缺则补发布
 # - workflow_dispatch  → 手动补发布
 #
+# 另外把每个 Release 的 tarball 作为**release 资产**挂上（`attach-tarball` job）：
+# 插件目录（awesome-dsh-plugin）的 `tarball` 字段要求形如
+# `<repo>-<version>.tgz` 的 release 资产，否则该字段会 404。每天也会自愈补挂。
+#
 # 需要仓库 Secret：NPM_TOKEN —— granular access token，权限 Packages: Read and write，
 # Scope 限定到本包，并开启 "Bypass 2FA when using this token"（否则发布会被 2FA 拦下）。
 # 也支持 npm Trusted Publishing（OIDC，无需 secret）：在 npmjs.com 为本仓库+本 workflow
@@ -133,3 +137,74 @@ jobs:
       - name: Report
         if: steps.target.outputs.skip != 'true' && steps.npmcheck.outputs.published == 'true'
         run: echo "::notice::dsh-ui-auth@${{ steps.target.outputs.version }} 已是最新，无需操作"
+
+  # 插件目录用 release 资产提供「下载 tarball」入口：
+  #   https://github.com/0QwQ0/dsh-ui-auth/releases/download/<tag>/dsh-ui-auth-<version>.tgz
+  # 该 URL 只在资产存在时可解析（catalog 的 probe-tarballs.mjs 会定期校验，死了就从站点摘掉），
+  # 所以每个 Release 都要挂上；每天也跑一次，缺了就补。
+  attach-tarball:
+    name: Attach release tarball
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 上传 Release 资产
+    steps:
+      - name: Resolve the latest release
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if ! tag=$(gh release view --json tagName -q .tagName 2>/dev/null); then
+            echo "::notice::仓库还没有 Release，跳过"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "::notice::目标 Release: $tag"
+
+      - uses: actions/checkout@v4
+        if: steps.target.outputs.skip != 'true'
+        with:
+          ref: ${{ steps.target.outputs.tag }}
+
+      - uses: actions/setup-node@v4
+        if: steps.target.outputs.skip != 'true'
+        with:
+          node-version: 24
+
+      - name: Check whether the asset already exists
+        id: asset
+        if: steps.target.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          name="dsh-ui-auth-${{ steps.target.outputs.version }}.tgz"
+          if gh release view "${{ steps.target.outputs.tag }}" --json assets -q '.assets[].name' | grep -Fxq "$name"; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$name 已存在，无需重复上传"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pack the tag and upload it as a release asset
+        if: steps.target.outputs.skip != 'true' && steps.asset.outputs.present == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          manifest=$(node -p "require('./package.json').version")
+          if [ "$manifest" != "${{ steps.target.outputs.version }}" ]; then
+            echo "::error::Release tag ${{ steps.target.outputs.tag }} 与 package.json ($manifest) 不一致，拒绝挂资产"
+            exit 1
+          fi
+          # lib/ 是已提交的构建产物（Test job 会校验与 src/ 一致），因此这里不必再跑一次 prepack
+          npm pack --ignore-scripts >/dev/null
+          ls -l "dsh-ui-auth-${manifest}.tgz"
+          gh release upload "${{ steps.target.outputs.tag }}" "dsh-ui-auth-${manifest}.tgz" --clobber
+          echo "::notice::已把 dsh-ui-auth-${manifest}.tgz 挂到 ${{ steps.target.outputs.tag }}"
