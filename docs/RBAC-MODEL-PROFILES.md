@@ -175,6 +175,36 @@ dsh-auth/profiles/deployment/<profileId>         # 部署级配置（部署者�
 
 ---
 
-## 附录 A：WP0 spike 结论（待填写）
+## 附录 A：WP0 spike 结论
 
-（开发首日填写：宿主凭据解析路径、是否支持按会话 / 用户覆盖、选定 R1 或 R2、回退方案。）
+**调查对象**：DSH `0.2.0-rc.2` 实际安装树（`@deepseek-ai/*` 288 个包，含 `dsh-llm` / `dsh-credentials` / `dsh-credentials-local` / `dsh-settings` / `dsh-session` / `dsh-llm-deepseek*`）。
+**结论**：**R1 可行**（调用路径可按用户解析凭据，且不需要影子替换宿主服务）；**R2 仍需保留**，用于界面与端点面的按用户裁剪。
+
+### A.1 取证
+
+| 事实 | 出处 |
+|---|---|
+| 一次 LLM 请求**携带会话身份** | `dsh-llm` 的 `GenerateOptions.sessionId?: Branded<'SessionId'>` —— 注释原文 "Session identity stamped by the loop for request routing" |
+| LLM 服务提供**可被 waterfall 拦截**的流式调用 API | `dsh-llm` 服务自述："LLM service: adapter registry with a **waterfall-interceptable** streaming call API" |
+| 插件可注册自己的适配器 | `dsh-llm` 导出 abstract `LlmAdapter`；`dsh-llm-deepseek` 导出 `DeepSeekAdapter`（可复用/委托） |
+| 每条路由的 API Key 引用**可配置、按请求解析** | `dsh-llm-deepseek-api-key` 的 `Config.apiKeyEnv: Volatile<string>`，注释 "Credential reference resolved per request; defaults to `DEEPSEEK_API_KEY`" |
+| 凭证 seam **没有用户维度** | `ctx.credentials.resolve(ref)` 以**环境变量名**为键；`CredentialKey = <插件名>/<id>`，scope 是"拥有该记录的插件" |
+| 设置 seam 的 `user` 层指**部署操作者** | `dsh-settings` 的 `SettingsDescriptor { base?, user? }`（base+user 两层，非多主体） |
+| 存在按请求的异步上下文 | `dsh-agent` 使用 `AsyncLocalStorage`（用于 initiator/父子代理追踪）——我们不需要依赖它 |
+
+### A.2 选定路线
+
+- **R1-i（首选）**：拦截 `dsh-llm` 的 **waterfall 调用点**，按 `GenerateOptions.sessionId` → 本插件会话归属表（已有 `state.owners`）→ 该用户的私有配置或被分享配置 → 以该 Key 注入 / 委托给既有 DeepSeek 适配器。
+- **R1-ii（备选）**：本插件注册一个 `LlmAdapter`（provider id 形如 `ui-auth`），内部按 `sessionId` 解析 Key 后**委托** `dsh-llm-deepseek` 的 `DeepSeekAdapter`。
+- **R2（保留）**：`llm/listProviders|listConfigurableProviders`、`session/modelCatalog|selectModel`、`settings/describe|mutate`（模型相关白名单键）、`credentials/*`、账户页 —— 按登录用户裁剪或拒绝。
+
+### A.3 与 Q1（方案 B，E2E）的相容性
+
+私有 Key 只存在于**本插件的加密存储**中；宿主明文存储（`$DSH_HOME/.credentials.yaml`）**始终不含**用户私有 Key —— 调用瞬间由我们的拦截器/适配器用该用户会话内存中的 KEK 解密。**INV-4 成立**：管理员即使拿到数据库/文件也无法解出私有 Key，且没有任何插件路径可读。
+
+### A.4 开发首日待验证清单
+
+1. waterfall 拦截点的确切形态（事件名 / 服务方法签名、能否改写凭据、失败语义）。
+2. 委托 `DeepSeekAdapter` 的构造与注册方式（是否支持运行时注册、是否需要 Loader 行）。
+3. `GenerateOptions.sessionId` 在 `purpose: 'compaction' | 'session-title'` 调用与**子代理**调用中是否同样携带。
+4. **无主体会话**（后台 / 定时 / 系统任务）的处理策略 —— 见 Q11（待所有者确认）。
