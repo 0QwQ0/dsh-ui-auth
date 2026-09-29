@@ -38,11 +38,25 @@ const fsMock = {
   async readText(target) { const v = fsFiles.get(target.path); if (v === undefined) throw Object.assign(new Error('not found'), { code: 'FS_NOT_FOUND' }); return v },
   async unlink(target) { fsFiles.delete(target.path) },
 }
+// v0.7.0：插件要求现代宿主；这里的桩模拟 0.2.0 的 connection 契约
+// （authorizeIndex 必须下发原生载体 Cookie，网关据此继续处理请求）。
+const modernConnection = {
+  authorizeIndex(_req, res) {
+    res.writeHead(200, { 'set-cookie': 'dsh-auth-check=1; Path=/; HttpOnly' })
+    return true
+  },
+  authenticatedUrl(baseUrl) { return baseUrl },
+  requestRejection() { return undefined },
+  createSharedFetchHandler() {
+    return { fetch: async () => new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } }) }
+  },
+}
 const ctx = {
   get(name) {
     if (name === 'credentials') return creds
     if (name === 'fs') return fsMock
     if (name === 'webServer') return { server }
+    if (name === 'connection') return modernConnection
     return undefined
   },
   effect() {},

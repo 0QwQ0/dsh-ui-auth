@@ -16,8 +16,9 @@
  * - agent-scoped verbs carry `agentId`, a SessionId;
  * - `workspaceFiles/*` carry `workspaceFileScopeId`, also a SessionId.
  *
- * Baseline note: this module is used only on hosts with `connection.authorizeIndex`
- * (DSH 0.1.2+). DSH 0.1.1-rc.2 keeps the legacy dotted/`apiProxy` path in `index.ts`.
+ * Baseline note: this module is the only policy path. v0.7.0 removed the legacy
+ * dotted/`apiProxy` transport, so a host without `connection.authorizeIndex`
+ * (DSH 0.1.1-rc.2) is refused at startup instead of falling back.
  */
 
 /** One authenticated principal; `role` is `'admin'` for administrators. */

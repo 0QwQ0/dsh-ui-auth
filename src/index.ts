@@ -217,23 +217,12 @@ type RegisterResult =
   | { status: 200; ok: true; username: string }
   | { status: 400 | 403 | 409; error: string }
 
-/** 解析出的一帧客户端 → 服务端 WebSocket 帧。 */
-interface WsFrame {
-  close?: boolean
-  ping?: Uint8Array
-  pong?: Uint8Array
-  opcode?: number
-  payload?: Uint8Array
-}
-
 // ============ WebSocket 工具（RFC 6455 最小实现，零依赖） ============
-// 事件流（/api/events.mux、/api/events.host）的帧是 JSON text（DSH 用 ws 库、
-// 不协商压缩），网关在升级层做代理 + 按归属逐帧过滤：每用户一条 apiProxy
-// 事件迭代器，帧经归属判定后编码为 WS text 帧写回用户 socket。
+// 仅保留 SHA-1 兜底：TOTP（RFC 6238）的 HMAC-SHA1 用它；WS 握手/帧编解码
+// 曾用于 legacy 的 /api/events.mux 代理，已随 v0.7.0 移除 legacy 传输线一并删除
+// （现代线由 `ws` 库处理 /api/remote.mux）。
 
-const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
-
-/** 纯 JS SHA-1（crypto.createHash 不可用时的兜底；仅用于 WS 握手指纹）。 */
+/** 纯 JS SHA-1（crypto.createHash 不可用时的兜底）。 */
 function sha1Fallback(data: string | Uint8Array): Uint8Array {
   // 参考实现：https://datatracker.ietf.org/doc/html/rfc3174 （算法公开）
   const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data
@@ -279,48 +268,10 @@ function wsSha1(data: string | Uint8Array): Uint8Array {
 }
 
 /** 计算 Sec-WebSocket-Accept（base64(SHA1(key + GUID))）。 */
-function wsAccept(key: string): string {
-  const digest = wsSha1(String(key) + WS_GUID)
-  // base64（无 Buffer 依赖）
-  const b64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-  let out = ''
-  for (let i = 0; i < digest.length; i += 3) {
-    const a = digest[i], b = digest[i + 1] === undefined ? 0 : digest[i + 1], c = digest[i + 2] === undefined ? 0 : digest[i + 2]
-    out += b64[a >> 2] + b64[((a & 3) << 4) | (b >> 4)] + (digest[i + 1] === undefined ? '=' : b64[((b & 15) << 2) | (c >> 6)]) + (digest[i + 2] === undefined ? '=' : b64[c & 63])
-  }
-  return out
-}
 
 /** 编码一个服务端 → 客户端数据帧（FIN=1, opcode, 无掩码；支持 64 位扩展长度）。 */
-function encodeWsText(text: string): Uint8Array {
-  const payload = new TextEncoder().encode(text)
-  const len = payload.length
-  let head
-  if (len < 126) {
-    head = new Uint8Array([0x81, len])
-  } else if (len < 65536) {
-    head = new Uint8Array([0x81, 126, (len >> 8) & 0xff, len & 0xff])
-  } else {
-    head = new Uint8Array([0x81, 127, 0, 0, 0, 0, 0, 0, 0, 0])
-    const dv = new DataView(head.buffer)
-    dv.setUint32(2, Math.floor(len / 0x100000000), false)
-    dv.setUint32(6, len >>> 0, false)
-  }
-  const out = new Uint8Array(head.length + len)
-  out.set(head, 0)
-  out.set(payload, head.length)
-  return out
-}
 
 /** 编码一个控制帧（close=8 / ping=9 / pong=10；可带 1-125 字节负载）。 */
-function encodeWsControl(opcode: number, payload?: Uint8Array | string): Uint8Array {
-  const p = payload === undefined ? new Uint8Array(0) : (payload instanceof Uint8Array ? payload : new TextEncoder().encode(String(payload)))
-  const head = new Uint8Array([0x80 | opcode, p.length])
-  const out = new Uint8Array(head.length + p.length)
-  out.set(head, 0)
-  out.set(p, head.length)
-  return out
-}
 
 // ============ TOTP（RFC 6238：HMAC-SHA1 + 30s 步进 + 6 位码） ============
 // 纯 JS 实现（复用 WS 握手的 sha1Fallback），不引入外部依赖。
@@ -404,54 +355,6 @@ export function totpVerifyCode(secretBase32: string, code: unknown): boolean {
 }
 
 /** 客户端 → 服务端帧流式解析器（浏览器下行通道只应出现 close/ping，仍完整支持掩码与分片）。 */
-class WsFrameReader {
-  declare buf: Uint8Array
-  declare done: boolean
-  constructor() { this.buf = new Uint8Array(0); this.done = false }
-  push(chunk: Uint8Array): void {
-    const merged = new Uint8Array(this.buf.length + chunk.length)
-    merged.set(this.buf, 0)
-    merged.set(chunk, this.buf.length)
-    this.buf = merged
-  }
-  /** 尝试取出一帧；不足一帧返回 null；连接关闭帧返回 {close: true}。 */
-  read(): WsFrame | null {
-    while (this.buf.length >= 2 && !this.done) {
-      const b0 = this.buf[0], b1 = this.buf[1]
-      const fin = (b0 & 0x80) !== 0
-      const opcode = b0 & 0x0f
-      const masked = (b1 & 0x80) !== 0
-      let len = b1 & 0x7f
-      let off = 2
-      if (len === 126) {
-        if (this.buf.length < 4) return null
-        len = (this.buf[2] << 8) | this.buf[3]
-        off = 4
-      } else if (len === 127) {
-        if (this.buf.length < 10) return null
-        const dv = new DataView(this.buf.buffer, this.buf.byteOffset, this.buf.byteLength)
-        len = Number(dv.getBigUint64(2, false))
-        off = 10
-      }
-      const maskBytes = masked ? 4 : 0
-      if (this.buf.length < off + maskBytes + len) return null
-      let payload = this.buf.slice(off + maskBytes, off + maskBytes + len)
-      if (masked) {
-        const key = this.buf.slice(off, off + 4)
-        const unmasked = new Uint8Array(len)
-        for (let i = 0; i < len; i++) unmasked[i] = payload[i] ^ key[i % 4]
-        payload = unmasked
-      }
-      this.buf = this.buf.slice(off + maskBytes + len)
-      if (opcode === 0x8) { this.done = true; return { close: true } }
-      if (opcode === 0x9) return { ping: payload }
-      if (opcode === 0xa) return { pong: payload }
-      if (!fin) continue // 分片续帧不单独处理：下行通道禁止数据帧，直接忽略续片
-      return { opcode, payload }
-    }
-    return null
-  }
-}
 
 /** 从环境变量解析限流配置（DSH_AUTH_MAX_FAILS / DSH_AUTH_LOCK_MS / DSH_AUTH_TRUST_PROXY）。 */
 export function readLockConfig(env?: Record<string, string | undefined> | null): LockConfig {
@@ -2569,8 +2472,38 @@ export function apply(ctx: CordisContext): void {
 
     const origReq = server.listeners('request') as ((req: IncomingMessage, res: ServerResponse) => void)[]
     const origUp = server.listeners('upgrade') as ((req: IncomingMessage, socket: Duplex, head: Buffer) => void)[]
-    const modern: ModernGateway | undefined = typeof ctx.get('connection')?.authorizeIndex === 'function'
-      ? createModernGateway(ctx, {
+    // ============ 宿主线别硬前置（v0.7.0：仅支持 DSH 0.2.0-rc.2 线） ============
+    // 旧传输线（0.1.1-rc.2 的 dotted `/api/<a>.<b>` 与 apiProxy 事件流）已在 v0.7.0 移除。
+    // 缺少现代网关所需的 `connection.authorizeIndex` 时认证网关无法建立：此时移除宿主监听器
+    // 并改为**明确拒绝**，而不是放行——宁可面板不可访问，也不能无门暴露。
+    const hostAuthorizeIndex = ctx.get('connection')?.authorizeIndex
+    if (typeof hostAuthorizeIndex !== 'function') {
+      console.error('[dsh-ui-auth] 不支持的 DSH 宿主：未提供 connection.authorizeIndex。'
+        + ' v0.7.0 起仅支持 DSH 0.2.0-rc.2 传输线（legacy 0.1.1-rc.2 支持已移除）。'
+        + ' 认证网关已 fail-closed：面板将不可访问，请升级 DSH 后重启。')
+      server.removeAllListeners('request')
+      server.removeAllListeners('upgrade')
+      const denyRequest = (_req: IncomingMessage, res: ServerResponse): void => {
+        try {
+          res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
+          res.end('dsh-ui-auth: 不支持的 DSH 版本（需要 0.2.0-rc.2 传输线）。认证网关已 fail-closed，面板不可访问。')
+        } catch (err) { try { res.destroy() } catch (e) { /* ignore */ } }
+      }
+      const denyUpgrade = (_req: IncomingMessage, socket: Duplex): void => {
+        try { socket.destroy() } catch (e) { /* ignore */ }
+      }
+      server.on('request', denyRequest)
+      server.on('upgrade', denyUpgrade)
+      ctx.effect(() => () => {
+        server.removeListener('request', denyRequest)
+        server.removeListener('upgrade', denyUpgrade)
+        for (const fn of origReq) server.on('request', fn)
+        for (const fn of origUp) server.on('upgrade', fn)
+      }, 'dsh-ui-auth: 不支持宿主时的 fail-closed 监听器')
+      return
+    }
+
+    const modern: ModernGateway = createModernGateway(ctx, {
           ready: initialized,
           user(username) {
             const user = state.users.get(username)
@@ -2599,239 +2532,8 @@ export function apply(ctx: CordisContext): void {
           claimSession: setSessionOwner,
           claimWorkspace: setWorkspaceOwner,
         })
-      : undefined
     server.removeAllListeners('request')
     server.removeAllListeners('upgrade')
-
-    // ============ 管理员专属 API 守卫 ============
-    // 模型配置（settings 的 llm-* 命名空间与 settings.models 镜像）与 Key 配置
-    // （credentials.set/unset、llm.discoverModels）仅管理员可用。普通用户即使
-    // 绕过 UI 直接调 /api 也会在此被拒；放行的请求用原始 chunk 回放请求体。
-    const ADMIN_API_RESTRICTED = new Set([
-      'settings.update', 'settings.replace', 'settings.mutate',
-      'credentials.set', 'credentials.unset',
-      'llm.discoverModels',
-    ])
-
-    function isLlmSettingsNs(ns: unknown): boolean {
-      return ns === 'settings.models' || (typeof ns === 'string' && ns.startsWith('llm-'))
-    }
-
-    function readBodyChunks(req: IncomingMessage, limit: number): Promise<any[]> {
-      return new Promise((resolve, reject) => {
-        const chunks: any[] = []
-        let size = 0
-        req.on('data', (chunk) => {
-          size += chunk.length
-          if (size > limit) {
-            reject(new Error('body too large'))
-            try { req.destroy() } catch (e) { /* ignore */ }
-            return
-          }
-          chunks.push(chunk)
-        })
-        req.on('end', () => resolve(chunks))
-        req.on('error', reject)
-      })
-    }
-
-    function decodeChunks(chunks: any[]): string {
-      let text = ''
-      const dec = new TextDecoder()
-      for (const c of chunks) text += dec.decode(c, { stream: true })
-      return text + dec.decode()
-    }
-
-    // /api 路由处理器只读 headers，body 经 `for await (req)` 消费：
-    // 网关读体后放行时，用保留了原始字段 + 缓冲 chunk 的对象回放。
-    function replayRequest(original: IncomingMessage, chunks: any[]): any {
-      let i = 0
-      return {
-        url: original.url,
-        method: original.method,
-        headers: original.headers,
-        socket: original.socket,
-        httpVersion: original.httpVersion,
-        httpVersionMajor: original.httpVersionMajor,
-        httpVersionMinor: original.httpVersionMinor,
-        destroy: () => { try { original.destroy() } catch (e) { /* ignore */ } },
-        [Symbol.asyncIterator]() {
-          return {
-            next() {
-              if (i < chunks.length) return Promise.resolve({ value: chunks[i++], done: false })
-              return Promise.resolve({ value: undefined, done: true })
-            },
-          }
-        },
-      }
-    }
-
-    // 非管理员访问受限 /api 方法：读取请求体判断并拒绝，返回 {pass, chunks}。
-    async function gateAdminApi(req: IncomingMessage, res: ServerResponse, pathname: string): Promise<{ pass: boolean; chunks?: any[] }> {
-      const method = pathname.slice('/api/'.length)
-      if (!ADMIN_API_RESTRICTED.has(method)) return { pass: true }
-      let chunks
-      try {
-        chunks = await readBodyChunks(req, MAX_BODY_BYTES)
-      } catch (err) {
-        sendJson(res, 403, { error: '仅管理员可执行此操作' })
-        return { pass: false }
-      }
-      let body: Record<string, any> = {}
-      try { body = JSON.parse(decodeChunks(chunks)) } catch (err) { body = {} }
-      const payload = body !== null && typeof body === 'object' && body.payload !== null && typeof body.payload === 'object'
-        ? body.payload : {}
-      let block = false
-      if (method === 'credentials.set' || method === 'credentials.unset' || method === 'llm.discoverModels') {
-        block = true
-      } else {
-        block = isLlmSettingsNs(typeof payload.ns === 'string' ? payload.ns : '')
-      }
-      if (block) {
-        sendJson(res, 403, { error: '仅管理员可执行此操作' })
-        return { pass: false }
-      }
-      return { pass: true, chunks }
-    }
-
-    // ============ 数据面隔离：按登录用户隔离会话/工作区 ============
-    // 直接访问方法 → 请求载荷里的 id 必须属于当前用户；
-    // 列表方法 → 响应体改写过滤；
-    // 创建方法 → 响应体打标（归属当前用户）。
-    const DATA_DIRECT_CHECKS: Record<string, string[]> = {
-      'session.history': ['sessionId'],
-      'session.rename': ['sessionId'],
-      'session.selectModel': ['sessionId'],
-      'session.updateQueue': ['sessionId'],
-      'session.cancel': ['sessionId'],
-      'session.prompt': ['sessionId'],
-      'session.attachment': ['sessionId'],
-      'session.models': ['sessionId'],
-      'session.fork': ['sessionId'],
-      'session.create': ['sessionId', 'workspaceId'],
-      'workspace.rename': ['workspaceId'],
-      'workspace.delete': ['workspaceId'],
-      'workspace.insertBefore': ['workspaceId'],
-      'workspace.insertSessionBefore': ['workspaceId', 'sessionId'],
-      'workspace.archiveSession': ['sessionId', 'workspaceId'],
-    }
-    const LIST_FILTER_METHODS = new Set(['session.list', 'session.search', 'workspace.list'])
-    const TAG_METHODS = new Set(['session.create', 'session.fork', 'workspace.create'])
-
-    function checkDataOwnership(method: string, payload: Record<string, any>, username: string): boolean {
-      const fields = DATA_DIRECT_CHECKS[method]
-      if (fields === undefined) return true
-      for (const f of fields) {
-        const id = typeof payload[f] === 'string' ? payload[f] : ''
-        if (id === '') continue
-        if (f === 'sessionId') {
-          if (method === 'session.create') {
-            // session.create 允许携带全新 id：仅当该 id 已知且属于他人时拒绝
-            const known = state.owners.sessions.get(id)
-            if (known !== undefined && known !== username) return false
-          } else if (ownerOfSession(id) !== username) {
-            return false
-          }
-        } else if (f === 'workspaceId' && ownerOfWorkspace(id) !== username) {
-          return false
-        }
-      }
-      return true
-    }
-
-    // 捕获响应的代理 res：body 收集完成后交给 transform，再把结果写给真实 res。
-    function captureJsonResponse(res: ServerResponse, transform: (body: Buffer) => Buffer | string): any {
-      const chunks: Buffer[] = []
-      const proxy = Object.create(res)
-      proxy.writeHead = (...args: any[]) => (res.writeHead as any)(...args)
-      proxy.write = (chunk: any) => {
-        if (chunk !== undefined && chunk !== null && chunk.length !== 0) chunks.push(Buffer.from(chunk))
-        return true
-      }
-      proxy.end = (chunk: any) => {
-        if (chunk !== undefined && chunk !== null && chunk.length !== 0) chunks.push(Buffer.from(chunk))
-        let out
-        try {
-          out = transform(Buffer.concat(chunks))
-        } catch (err) {
-          console.error('[dsh-ui-auth] 响应转换失败，原样转发: ' + String(err))
-          out = Buffer.concat(chunks)
-        }
-        try {
-          res.write(out)
-          res.end()
-        } catch (err) {
-          try { res.destroy() } catch (e) { /* ignore */ }
-        }
-      }
-      return proxy
-    }
-
-    function filterListResponseBody(method: string, body: Buffer, username: string): Buffer | string {
-      let parsed
-      try { parsed = JSON.parse(body.toString('utf8')) } catch (err) { return body }
-      if (parsed === null || typeof parsed !== 'object') return body
-      const result = parsed.result
-      if (result === null || typeof result !== 'object' || result.ok !== true
-        || result.value === null || typeof result.value !== 'object') return body
-      const value = result.value
-      if (method === 'session.list' || method === 'session.search') {
-        if (Array.isArray(value.items)) {
-          const before = value.items.length
-          value.items = value.items.filter((it: any) => it !== null && typeof it === 'object'
-            && ownerOfSession(it.sessionId) === username)
-          if (method === 'session.search' && value.items.length < before) value.hasMore = false
-        }
-      } else if (method === 'workspace.list') {
-        if (Array.isArray(value.items)) {
-          value.items = value.items
-            .filter((w: any) => w !== null && typeof w === 'object' && ownerOfWorkspace(w.workspaceId) === username)
-            .map((w: any) => {
-              if (Array.isArray(w.sessionIds)) {
-                w.sessionIds = w.sessionIds.filter((id: string) => ownerOfSession(id) === username)
-              }
-              return w
-            })
-        }
-        if (Array.isArray(value.archivedSessionIds)) {
-          value.archivedSessionIds = value.archivedSessionIds.filter((id: string) => ownerOfSession(id) === username)
-        }
-      }
-      return JSON.stringify(parsed)
-    }
-
-    function tagResponseBody(method: string, body: Buffer, username: string): Buffer {
-      let parsed
-      try { parsed = JSON.parse(body.toString('utf8')) } catch (err) { return body }
-      if (parsed === null || typeof parsed !== 'object') return body
-      const result = parsed.result
-      if (result === null || typeof result !== 'object' || result.ok !== true
-        || result.value === null || typeof result.value !== 'object') return body
-      const value = result.value
-      if ((method === 'session.create' || method === 'session.fork')
-        && typeof value.sessionId === 'string' && value.sessionId !== '') {
-        setSessionOwner(value.sessionId, username).catch((err) => {
-          console.error('[dsh-ui-auth] 会话打标失败: ' + String(err))
-        })
-      } else if (method === 'workspace.create') {
-        const w = value.workspace
-        if (w !== null && typeof w === 'object' && typeof w.workspaceId === 'string' && w.workspaceId !== '') {
-          setWorkspaceOwner(w.workspaceId, username).catch((err) => {
-            console.error('[dsh-ui-auth] 工作区打标失败: ' + String(err))
-          })
-        }
-      }
-      return body
-    }
-
-    // GET /api/session.export?sessionId=... —— 导出会话日志，非属主必须拒绝
-    function exportSessionIdOf(pathname: string, rawUrl: unknown): string | undefined {
-      if (pathname !== '/api/session.export') return undefined
-      if (typeof rawUrl !== 'string') return undefined
-      const m = rawUrl.match(/[?&]sessionId=([^&]+)/)
-      if (m === null) return undefined
-      try { return decodeURIComponent(m[1]) } catch (err) { return m[1] }
-    }
 
     async function handleGate(req: IncomingMessage, res: ServerResponse): Promise<void> {
       const pathname = pathnameOf(req.url)
@@ -2846,61 +2548,13 @@ export function apply(ctx: CordisContext): void {
       const token = readCookie(req, COOKIE_NAME)
       const who = resolveSession(token)
       if (who !== undefined) {
-        if (modern !== undefined && await modern.handleHttp(req, res, (request, response) => {
+        if (await modern.handleHttp(req, res, (request, response) => {
           for (const fn of origReq) fn.call(server, request, response)
         })) return
-        const user = state.users.get(who)
-        if (user !== undefined && user.role !== 'admin' && pathname.startsWith('/api/')) {
-          const method = pathname.slice('/api/'.length)
-          // A) 管理员专属写操作（模型/Key 配置）
-          const adminGate = await gateAdminApi(req, res, pathname)
-          if (!adminGate.pass) return
-          // B) 会话导出（GET + query sessionId）
-          const exportId = exportSessionIdOf(pathname, req.url)
-          if (exportId !== undefined) {
-            if (ownerOfSession(exportId) !== who) {
-              sendJson(res, 403, { error: '无权导出该会话' })
-              return
-            }
-            for (const fn of origReq) fn.call(server, req, res)
-            return
-          }
-          // C) 数据面隔离
-          if (DATA_DIRECT_CHECKS[method] !== undefined) {
-            let chunks
-            try { chunks = await readBodyChunks(req, MAX_BODY_BYTES) } catch (err) {
-              sendJson(res, 403, { error: '无权访问该会话或工作区' })
-              return
-            }
-            let body: Record<string, any> = {}
-            try { body = JSON.parse(decodeChunks(chunks)) } catch (err) { body = {} }
-            const payload = body !== null && typeof body === 'object' && body.payload !== null && typeof body.payload === 'object'
-              ? body.payload : {}
-            if (!checkDataOwnership(method, payload, who)) {
-              sendJson(res, 403, { error: '无权访问该会话或工作区' })
-              return
-            }
-            // session.create/fork 既校验源也需对新建会话打标：检查通过后仍走响应捕获
-            if (TAG_METHODS.has(method)) {
-              for (const fn of origReq) fn.call(server, replayRequest(req, chunks), captureJsonResponse(res, (b) => tagResponseBody(method, b, who)))
-            } else {
-              for (const fn of origReq) fn.call(server, replayRequest(req, chunks), res)
-            }
-            return
-          }
-          if (LIST_FILTER_METHODS.has(method)) {
-            for (const fn of origReq) fn.call(server, req, captureJsonResponse(res, (body) => filterListResponseBody(method, body, who)))
-            return
-          }
-          if (TAG_METHODS.has(method)) {
-            for (const fn of origReq) fn.call(server, req, captureJsonResponse(res, (body) => tagResponseBody(method, body, who)))
-            return
-          }
-          for (const fn of origReq) fn.call(server, req, res)
-          return
-        }
+        // 网关明确不接管（页面/静态资源，以及它已判定为管理员专属的直连路径）：
+        // 它在 prepare 阶段已下发原生载体 Cookie 并跑过 requestRejection，因此这里的
+        // 转发是受控的。v0.7.0 删掉的是 legacy 那条**未经任何判定**的无门转发。
         for (const fn of origReq) fn.call(server, req, res)
-        return
       }
       const method = typeof req.method === 'string' ? req.method.toUpperCase() : 'GET'
       if (method === 'GET' || method === 'HEAD') {
@@ -2929,135 +2583,6 @@ export function apply(ctx: CordisContext): void {
       })
     }
 
-    // ============ 事件流代理（0.4.0：按登录用户逐帧隔离） ============
-    // events.mux / events.host 的帧是 JSON text（DSH ws 库、无压缩），每帧带
-    // sessionId（或 workspaceId）。网关在升级层代理：进程内直接消费 apiProxy
-    // 的事件迭代器（每用户一条，等价于浏览器直连），逐帧按归属表过滤后
-    // 编码为 WS text 帧写回用户 socket —— 网络层即隔离，无需反向代理。
-    // 依赖 ctx.apiProxy（DSH host 服务）；不可用时 fail-closed（销毁连接），
-    // 绝不降级为透传（那会把全量事件帧交给普通用户）。
-
-    function filterMuxEnvelope(who: string, envelope: any): any {
-      const p = envelope !== null && typeof envelope === 'object' ? envelope.payload : undefined
-      if (p === undefined || typeof p !== 'object' || p === null) return null
-      if (p.type === 'stream/error') return envelope
-      if (typeof p.sessionId === 'string' && ownerOfSession(p.sessionId) === who) return envelope
-      return null
-    }
-
-    function filterHostEnvelope(who: string, envelope: any): any {
-      const p = envelope !== null && typeof envelope === 'object' ? envelope.payload : undefined
-      if (p === undefined || typeof p !== 'object' || p === null) return null
-      if (p.type === 'stream/error') return envelope
-      const isAdmin = ((state.users.get(who) || {}) as UserRecord).role === 'admin'
-      if (p.type === 'host/remote-event') return isAdmin ? envelope : null
-      if (typeof p.sessionId === 'string') {
-        return ownerOfSession(p.sessionId) === who ? envelope : null
-      }
-      if (typeof p.workspaceId === 'string') {
-        return ownerOfWorkspace(p.workspaceId) === who ? envelope : null
-      }
-      if (p.type === 'host/workspace-order-changed' && Array.isArray(p.workspaceIds)) {
-        const own = p.workspaceIds.filter((id: string) => ownerOfWorkspace(id) === who)
-        return { ...envelope, payload: { ...p, workspaceIds: own } }
-      }
-      if (p.type === 'host/archived-sessions-changed' && Array.isArray(p.archivedSessionIds)) {
-        const own = p.archivedSessionIds.filter((id: string) => ownerOfSession(id) === who)
-        return { ...envelope, payload: { ...p, archivedSessionIds: own } }
-      }
-      return null
-    }
-
-    function wsWriteBackpressure(socket: Duplex, chunk: Uint8Array, cb: (value?: unknown) => void): void {
-      try {
-        if (socket.write(chunk)) { cb(); return }
-        let settled = false
-        const onDrain = () => { if (!settled) { settled = true; cleanup(); cb() } }
-        const onErr = () => { if (!settled) { settled = true; cleanup(); cb() } }
-        const cleanup = () => { socket.removeListener('drain', onDrain); socket.removeListener('error', onErr) }
-        socket.once('drain', onDrain)
-        socket.once('error', onErr)
-      } catch (err) { cb() }
-    }
-
-    function handleEventUpgrade(req: IncomingMessage, socket: Duplex, who: string, pathname: string, head: Buffer): void {
-      const key = req.headers !== undefined ? req.headers['sec-websocket-key'] : undefined
-      if (typeof key !== 'string' || key === '') { try { socket.destroy() } catch (e) { /* ignore */ } return }
-      try {
-        socket.write('HTTP/1.1 101 Switching Protocols\r\n' +
-          'Upgrade: websocket\r\nConnection: Upgrade\r\n' +
-          'Sec-WebSocket-Accept: ' + wsAccept(key) + '\r\n\r\n')
-      } catch (err) { try { socket.destroy() } catch (e) { /* ignore */ } return }
-      const apiProxy = ctx.get('apiProxy')
-      const events = apiProxy !== undefined ? apiProxy.events : undefined
-      if (events === undefined) {
-        // apiProxy 未就绪：fail-closed，绝不透传（透传会让普通用户收到全量事件帧）
-        try { socket.destroy() } catch (e) { /* ignore */ }
-        return
-      }
-      const isMux = pathname === '/api/events.mux'
-      const filter = isMux ? filterMuxEnvelope : filterHostEnvelope
-      const controller = new AbortController()
-      const signal = controller.signal
-      const reader = new WsFrameReader()
-      const closeBoth = () => {
-        try { controller.abort() } catch (e) { /* ignore */ }
-        try { socket.end() } catch (e) { /* ignore */ }
-      }
-      const processIncoming = (bytes: Uint8Array): void => {
-        reader.push(bytes)
-        let frame
-        while ((frame = reader.read()) !== null) {
-          if (frame.close) { closeBoth(); return }
-          if (frame.ping !== undefined) {
-            try { socket.write(encodeWsControl(0xa, frame.ping)) } catch (e) { /* ignore */ }
-            continue
-          }
-          // 下行通道禁止数据消息（对齐 DSH：close 1008 'downlink only'）
-          try { socket.write(encodeWsControl(0x8, new Uint8Array([0x03, 0xf0]))) } catch (e) { /* ignore */ }
-          closeBoth()
-          return
-        }
-      }
-      socket.on('data', (chunk) => { try { processIncoming(new Uint8Array(chunk)) } catch (e) { /* ignore */ } })
-      socket.on('close', () => { try { controller.abort() } catch (e) { /* ignore */ } })
-      socket.on('error', () => { try { controller.abort() } catch (e) { /* ignore */ } })
-      if (head !== undefined && head.length > 0) { try { processIncoming(new Uint8Array(head)) } catch (e) { /* ignore */ } }
-      const pump = (async () => {
-        try {
-          const iterable = isMux
-            ? events.mux({ rpcId: randomUUID(), payload: {} }, signal)
-            : events.host({ rpcId: randomUUID(), payload: {} }, signal)
-          for await (const envelope of iterable) {
-            const out = filter(who, envelope)
-            if (out === null) continue
-            const text = JSON.stringify({
-              type: 'server-request',
-              rpcId: out.rpcId,
-              method: out.payload !== undefined && typeof out.payload === 'object' ? out.payload.type : undefined,
-              payload: out.payload,
-            })
-            if (socket.destroyed || socket.writableEnded) break
-            await new Promise((resolve) => wsWriteBackpressure(socket, encodeWsText(text), resolve))
-          }
-        } catch (err) {
-          if (!signal.aborted) {
-            try {
-              socket.write(encodeWsText(JSON.stringify({
-                type: 'server-request',
-                rpcId: randomUUID(),
-                method: 'stream/error',
-                payload: { type: 'stream/error', error: { code: 'internal', message: String(err instanceof Error ? err.message : err), details: {} } },
-              })))
-            } catch (e) { /* ignore */ }
-          }
-        } finally {
-          closeBoth()
-        }
-      })()
-      void pump
-    }
-
     const gateUp = (req: IncomingMessage, socket: Duplex, head: Buffer): void => {
       try {
         const pathname = pathnameOf(req.url)
@@ -3068,17 +2593,9 @@ export function apply(ctx: CordisContext): void {
         const token = readCookie(req, COOKIE_NAME)
         const who = resolveSession(token)
         if (who === undefined) { socket.destroy(); return }
-        if (modern !== undefined) {
-          modern.handleUpgrade(req, socket, head, (request, stream, bytes) => {
-            for (const fn of origUp) fn.call(server, request, stream, bytes)
-          })
-          return
-        }
-        if (pathname === '/api/events.mux' || pathname === '/api/events.host') {
-          handleEventUpgrade(req, socket, who, pathname, head)
-          return
-        }
-        for (const fn of origUp) fn.call(server, req, socket, head)
+        modern.handleUpgrade(req, socket, head, (request, stream, bytes) => {
+          for (const fn of origUp) fn.call(server, request, stream, bytes)
+        })
       } catch (err) {
         try { socket.destroy() } catch (e) { /* ignore */ }
       }
