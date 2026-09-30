@@ -202,6 +202,22 @@ dsh-auth/profiles/deployment/<profileId>         # 部署级配置（部署者�
 
 私有 Key 只存在于**本插件的加密存储**中；宿主明文存储（`$DSH_HOME/.credentials.yaml`）**始终不含**用户私有 Key —— 调用瞬间由我们的拦截器/适配器用该用户会话内存中的 KEK 解密。**INV-4 成立**：管理员即使拿到数据库/文件也无法解出私有 Key，且没有任何插件路径可读。
 
+### A.5 实施决定（WP3 已落地 / WP4 据此实现）
+
+WP3 已实现 `src/model-profiles.ts`（PBKDF2-SHA256 → AES-256-GCM、AAD 绑定 `uid/profileId`、按 uid 分区、`assertSameUser` 守卫、服务端主密钥托管分享配置），并由 `test/profile-crypto.test.mjs`（7 项）固化两条关键主张：主密钥解不开私有配置、存储中不出现明文 Key。
+
+WP4 的会话密钥生命周期**据此确定**（避免在内存中长期持有口令）：
+
+1. **用户级包装密钥**：`userKek = PBKDF2(登录口令, 用户级 salt, ≥600k)`；用户的 salt/iterations 存在 uid 映射记录里（每人一份，改密时重包裹）。
+2. **每条私有配置用随机 DEK** 加密 API Key，DEK 自身用 `userKek` 包成 `wrappedDek`（AAD 仍为 `uid/profileId`）。
+3. **会话只持有 `userKek`**（32 字节），**不持有口令**；登录时派生、登出/会话过期即丢弃（`KekRegistry`：token → `{ uid, userKek }`）。
+4. **口令变更**：用旧 KEK 解出各 DEK → 用新 KEK 重包裹（改密流程持有明文口令那一刻完成）。
+5. **管理员重置口令**：私有配置不可恢复 → 标记"需重新录入"（Q1 的必然代价，界面明示）。
+6. **纯通行密钥用户**：登录时没有口令 → 需要"密钥口令"解锁私有配置；未设置时私有配置不可用（只可用分享配置），界面引导设置。
+7. **无主体会话（Q11(c)）**：子代理继承父会话所属用户；真正无归属时 fail-closed，绝不回退部署级配置。
+
+> 注：WP3 当前的 `sealPrivate/openPrivate` 直接以口令派生 KEK（每条配置各自 salt）。WP4 将引入上面的"用户级 KEK + 每配置 DEK"信封结构；两者的密文格式都带 `v: 1` 与 KDF 参数，因此旧记录可平滑迁移（首次解锁时重包裹）。
+
 ### A.4 开发首日待验证清单
 
 1. waterfall 拦截点的确切形态（事件名 / 服务方法签名、能否改写凭据、失败语义）。
