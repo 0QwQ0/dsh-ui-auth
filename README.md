@@ -5,12 +5,14 @@
 [![npm downloads](https://img.shields.io/npm/dm/dsh-ui-auth.svg)](https://www.npmjs.com/package/dsh-ui-auth)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/0QwQ0/dsh-ui-auth)
 
-## 🔴 兼容性提示：legacy 版本（DSH 0.1.1-rc.2）的支持将于 v0.7.0 起结束
+## 🔴 兼容性提示：legacy 版本（DSH 0.1.1-rc.2）的支持已于 v0.7.0 结束
 
-![legacy support ends in v0.7.0](https://img.shields.io/badge/legacy%20support-ends%20in%20v0.7.0-red)
+![legacy support ended in v0.7.0](https://img.shields.io/badge/legacy%20support-ended%20in%20v0.7.0-red)
 
-v0.7.0 起本插件**只跟随 DSH 的新版本开发**（当前为 `0.1.2-rc.1` ~ `0.1.5-rc.1` 及其后续版本），
-不再对 `DSH 0.1.1-rc.2` 这条旧传输线（dotted `/api/<a>.<b>` + `apiProxy`）做适配与验收。
+v0.7.0 起本插件**只跟随 DSH 的新版本开发**（目标版本 `0.2.0-rc.2`），
+legacy 传输线（dotted `/api/<a>.<b>` + `apiProxy`）的代码已**完全移除**：
+宿主未提供现代传输能力时插件会 **fail-closed**（认证网关不建立、面板不可访问并输出明确错误），
+**不会**退回旧传输线，更不会降级成无门放行。
 若 DSH 后续架构有大变动，我会**提前声明**该版本的支持结束时间，不会突然中断。
 仍在使用 0.1.1-rc.2 的部署请在此之前按 [DSH 版本兼容性](#dsh-版本兼容性) 一节规划升级。
 
@@ -159,7 +161,7 @@ otpauth 链接）后输入 6 位动态码完成绑定。动态码错误同样计
 | 模型 | 仅管理员（普通用户看到提示页） |
 
 需要放开某项的部署，可由宿主插件通过 `uiAuth.registerPolicy()` 逐条登记，见
-[docs/DSH-0.1.5-COMPATIBILITY.md](docs/DSH-0.1.5-COMPATIBILITY.md)。
+[docs/DSH-0.2.0-COMPATIBILITY.md](docs/DSH-0.2.0-COMPATIBILITY.md)。
 
 ### 数据隔离
 
@@ -251,16 +253,22 @@ dsh plugin --profile web remove dsh-ui-auth
 
 ## DSH 版本兼容性
 
-同一份代码按能力探测自动选择传输适配，无需配置：
+v0.7.0 起**只支持 modern 传输线**（DSH `0.2.0-rc.2` 线），legacy 传输线已完全移除。
+下表按"目标版本 / 中间版本 / legacy"三档给出实测结论（表格随每次实测更新）：
 
-| DSH 版本 | 传输线 | 说明 |
-|---|---|---|
-| `0.1.1-rc.2` | legacy | dotted `/api/<a>.<b>` RPC 与 `apiProxy` 事件流，历史行为保持不变 |
-| `0.1.2-rc.1` ~ `0.1.5-rc.1` | modern | 斜杠 RPC `/api/<ns>/<method>`、`/api/remote.mux` 流式通道与原生浏览器会话门 |
+| 档位 | DSH 版本 | 结论 | 说明 |
+|---|---|---|---|
+| **目标** | `0.2.0-rc.2` | ✅ compatible | 唯一的目标版本；启动即硬前置校验，端点面与页面均按此版本实测 |
+| 中间 | `0.2.0-rc.1`、`0.1.7-rc.x`、`0.1.6-alpha.x`、`0.1.5-rc.x` | ⏳ 待实测填表 | 不刻意适配；实测顺带可用者标注为 compatible/degraded，不可用者标注 unsupported（见 WP8 矩阵） |
+| legacy | `0.1.1-rc.2` | ❌ **已移除** | 缺失 `connection.authorizeIndex` 时**fail-closed**：认证网关不建立、面板不可访问并输出明确错误，绝不降级为无门放行 |
 
-modern 传输线为安全起见对普通用户**更严格**：不能创建 workspace（工作区目录属部署方能力），
+**注意**：宿主未提供现代传输能力时，插件**不会**退回旧传输线，而是以"明确拒绝"的方式停摆
+（宁可不可访问，也不能无门暴露）。这也意味着升级到 v0.7.0 前请先确认 DSH 版本。
+
+普通用户在 modern 线上的可达面同样按用户裁剪：模型与 API Key 各自独立（见
+[按用户隔离的模型与 API Key](docs/RBAC-MODEL-PROFILES.md)），不能创建 workspace（属部署方能力），
 也不能写入任何设置命名空间；需要放开时可由宿主插件通过 `uiAuth` 接口登记策略。
-端点清单、收紧项与验证证据见 [docs/DSH-0.1.5-COMPATIBILITY.md](docs/DSH-0.1.5-COMPATIBILITY.md)。
+端点清单、收紧项与验证证据见 [docs/DSH-0.2.0-COMPATIBILITY.md](docs/DSH-0.2.0-COMPATIBILITY.md)。
 
 ## 常见问题
 
@@ -321,6 +329,6 @@ npm run verify:clean   # 校验 lib/ 与 src/ 一致（修改源码后需提交�
 | `src/client.ts` | `lib/client.js` | 设置面板客户端（由 `build/client.mjs` 打成 DSH 客户端契约） |
 | `src/passkey-browser.ts` | `lib/passkey-browser.js` | 登录页用的 WebAuthn 浏览器端 bundle（同一份社区库） |
 
-更多文档：[兼容性与隔离策略](docs/DSH-0.1.5-COMPATIBILITY.md) ·
+更多文档：[兼容性与隔离策略](docs/DSH-0.2.0-COMPATIBILITY.md) ·
 [安全审计与测试证据](docs/STORE-EVIDENCE.md) · [发布流程（维护者）](docs/PUBLISHING.md) ·
 [变更记录](CHANGELOG.md) · [MIT 许可证](LICENSE)
