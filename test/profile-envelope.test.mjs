@@ -23,7 +23,11 @@ test('user KDF parameters are per-user and stable', async () => {
   assert.equal((await ensureUserKdf(seam, ALICE, ITER)).salt, alice.salt, 'salt must be stable once created')
   const bob = await ensureUserKdf(seam, BOB, ITER)
   assert.notEqual(bob.salt, alice.salt, 'each user gets their own salt')
-  assert.equal(seam.map.has(`dsh-auth/profile-kdf/${ALICE}`), true)
+  // 键必须是宿主语法：恰好两段 <scope>/<id>（三段会让宿主凭据服务在下次启动时解析失败）
+  const kdfKey = `dsh-auth/profile-kdf-${ALICE}`
+  assert.equal(seam.map.has(kdfKey), true)
+  assert.equal(kdfKey.split('/').length, 2, '凭据键只能有两段')
+  assert.match(kdfKey, /^[a-z0-9-]+\/[a-z0-9-]+$/)
 })
 
 test('envelope round-trips, and every deviation is refused', async () => {
