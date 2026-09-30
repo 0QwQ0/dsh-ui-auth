@@ -601,6 +601,35 @@ export function apply(ctx: CordisContext): void {
 
     // WP4：模型配置服务。**必须是持久实例**——它内部记录 uid→会话 token 的绑定，
     // 每次 RPC 新建实例会把绑定丢掉，解锁后立刻又变成 locked。store 就绪后（或换了实例）重建一次。
+    /**
+     * 服务端代查 DeepSeek 兼容接口的余额：只回数字，Key 永不外传。
+     * baseURL 由配置提供（第 1 项要求创建分享时填写），缺省用官方地址。
+     */
+    const deepseekBalanceFetcher = async (apiKey: string, baseUrl?: string): Promise<{ currency: string; total: number; granted?: number; toppedUp?: number } | null> => {
+      const origin = (baseUrl === undefined || baseUrl.trim() === '' ? 'https://api.deepseek.com' : baseUrl.trim()).replace(/\/+$/, '')
+      try {
+        const response = await fetch(origin + '/user/balance', {
+          headers: { authorization: 'Bearer ' + apiKey, accept: 'application/json' },
+        })
+        if (!response.ok) return null
+        const payload = await response.json() as { balance_infos?: Array<{ currency?: string; total_balance?: string; granted_balance?: string; topped_up_balance?: string }> }
+        const info = payload.balance_infos?.[0]
+        if (info === undefined) return null
+        const num = (value: unknown): number | undefined => {
+          const parsed = Number(value)
+          return Number.isFinite(parsed) ? parsed : undefined
+        }
+        return {
+          currency: typeof info.currency === 'string' ? info.currency : 'CNY',
+          total: num(info.total_balance) ?? 0,
+          ...(num(info.granted_balance) === undefined ? {} : { granted: num(info.granted_balance) as number }),
+          ...(num(info.topped_up_balance) === undefined ? {} : { toppedUp: num(info.topped_up_balance) as number }),
+        }
+      } catch (error) {
+        return null
+      }
+    }
+
     let profileServiceCache: ProfileService | null = null
     let profileServiceStore: UiAuthStore | null = null
     function profileService(): ProfileService | undefined {
@@ -613,6 +642,7 @@ export function apply(ctx: CordisContext): void {
           registry: kekRegistry,
           sessionOwner: (sessionId: string) => ownerOfSession(sessionId),
           uidOf: async (username: string) => await profileStore.ensureUid(username),
+          balanceFetcher: deepseekBalanceFetcher,
         })
         profileServiceStore = store
       }
@@ -2245,31 +2275,6 @@ export function apply(ctx: CordisContext): void {
           sendJson(res, 403, { error: err instanceof Error ? err.message : '拒绝' })
         }
       }
-      const balanceFetcher = async (apiKey: string): Promise<{ currency: string; total: number; granted?: number; toppedUp?: number } | null> => {
-        // 服务端代查 DeepSeek 余额：只读数字，Key 永不外传。
-        try {
-          const response = await fetch('https://api.deepseek.com/user/balance', {
-            headers: { authorization: `Bearer ${apiKey}`, accept: 'application/json' },
-          })
-          if (!response.ok) return null
-          const payload = await response.json() as { balance_infos?: Array<{ currency?: string; total_balance?: string; granted_balance?: string; topped_up_balance?: string }> }
-          const info = payload.balance_infos?.[0]
-          if (info === undefined) return null
-          const num = (v: unknown): number | undefined => {
-            const parsed = Number(v)
-            return Number.isFinite(parsed) ? parsed : undefined
-          }
-          return {
-            currency: typeof info.currency === 'string' ? info.currency : 'CNY',
-            total: num(info.total_balance) ?? 0,
-            ...(num(info.granted_balance) === undefined ? {} : { granted: num(info.granted_balance) as number }),
-            ...(num(info.topped_up_balance) === undefined ? {} : { toppedUp: num(info.topped_up_balance) as number }),
-          }
-        } catch (err) {
-          return null
-        }
-      }
-
       switch (method) {
         case 'me':
           sendJson(res, 200, { ok: true, me: publicUser(me) })
@@ -2354,6 +2359,12 @@ export function apply(ctx: CordisContext): void {
         case 'shareOwn':
           await runProfile(async (service, uid) => {
             sendJson(res, 200, { ok: true, shared: await service.listGrantedProfiles(uid) })
+          })
+          return
+        case 'profileTestKey':
+          await runProfile(async (service) => {
+            const result = await service.testKey(typeof args.apiKey === 'string' ? args.apiKey : '', str(args.baseUrl, 200) === '' ? undefined : str(args.baseUrl, 200))
+            sendJson(res, result.ok ? 200 : 400, result.ok ? { ok: true, balance: result.balance } : { ok: false, error: result.error })
           })
           return
         case 'shareCreate':

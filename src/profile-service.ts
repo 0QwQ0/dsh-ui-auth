@@ -60,7 +60,7 @@ export interface ProfileServiceDeps {
   readonly registry: KekRegistry
   readonly sessionOwner: (sessionId: string) => string | undefined
   readonly uidOf: (username: string) => Promise<string | undefined>
-  readonly balanceFetcher?: (apiKey: string) => Promise<Omit<BalanceResult, 'fetchedAt'> | null>
+  readonly balanceFetcher?: (apiKey: string, baseUrl?: string) => Promise<Omit<BalanceResult, 'fetchedAt'> | null>
   readonly now?: () => number
 }
 
@@ -417,28 +417,52 @@ export class ProfileService {
     if (cached !== undefined && now - cached.fetchedAt < BALANCE_TTL_MS) return cached
     if (now - (this.lastBalanceAt.get(uid) ?? 0) < BALANCE_MIN_INTERVAL_MS) return { error: 'rate-limited' }
 
-    const apiKey = await this.apiKeyFor(uid, doc, profileId)
-    if (apiKey === undefined) return { error: 'no-profile' }
+    const resolved = await this.apiKeyFor(uid, doc, profileId)
+    if (resolved === undefined) return { error: 'no-profile' }
     this.lastBalanceAt.set(uid, now)
-    const result = await fetcher(apiKey)
+    const result = await fetcher(resolved.apiKey, resolved.baseUrl)
     if (result === null) return { error: 'unavailable' }
     const stamped: BalanceResult = { ...result, fetchedAt: now }
     this.balanceCache.set(cacheKey, stamped)
     return stamped
   }
 
-  private async apiKeyFor(uid: string, doc: DefaultDoc, profileId?: string): Promise<string | undefined> {
+  /** 解析某条配置的 Key 与它适用的 baseURL（余额/测试连接都走这里，保证口径一致）。 */
+  private async apiKeyFor(
+    uid: string, doc: DefaultDoc, profileId?: string,
+  ): Promise<{ apiKey: string; baseUrl?: string } | undefined> {
     if (doc.share !== undefined) {
       const shared = (await this.deps.store.listShared(doc.share.ownerUid)).find(profile => profile.profileId === doc.share?.profileId)
       if (shared === undefined) return undefined
-      return await openShared(await this.masterKey(), doc.share.ownerUid, shared.profileId, shared.sealed)
+      const apiKey = await openShared(await this.masterKey(), doc.share.ownerUid, shared.profileId, shared.sealed)
+      return { apiKey, ...(shared.baseUrl === undefined ? {} : { baseUrl: shared.baseUrl }) }
     }
     const target = profileId ?? doc.profileId
     if (target === undefined) return undefined
     const profile = await this.deps.store.readPrivate(uid, uid, target)
     const kek = this.kekOf(uid)
     if (profile?.wrappedDek === undefined || kek === undefined) return undefined
-    return await openPrivateWithKek(kek, uid, target, profile.wrappedDek, profile.sealed)
+    const apiKey = await openPrivateWithKek(kek, uid, target, profile.wrappedDek, profile.sealed)
+    return { apiKey, ...(profile.baseUrl === undefined ? {} : { baseUrl: profile.baseUrl }) }
+  }
+
+  /**
+   * 校验一条 Key（+可选 baseURL）是否可用——创建分享/保存配置前由界面调用。
+   * 只返回结论与余额数字，**不回传 Key**。
+   */
+  async testKey(
+    apiKey: string, baseUrl?: string,
+  ): Promise<{ ok: true; balance?: Omit<BalanceResult, 'fetchedAt'> } | { ok: false; error: string }> {
+    const fetcher = this.deps.balanceFetcher
+    if (fetcher === undefined) return { ok: false, error: '当前部署未启用 Key 校验（缺少余额查询实现）' }
+    if (typeof apiKey !== 'string' || apiKey.trim() === '') return { ok: false, error: 'API Key 不能为空' }
+    try {
+      const result = await fetcher(apiKey.trim(), baseUrl)
+      if (result === null) return { ok: false, error: '无法验证：接口拒绝或网络不可达（请检查 Key 与 baseURL）' }
+      return { ok: true, balance: result }
+    } catch (error) {
+      return { ok: false, error: `无法验证：${error instanceof Error ? error.message : String(error)}` }
+    }
   }
 
   private requireKek(uid: string): Uint8Array<ArrayBuffer> {
