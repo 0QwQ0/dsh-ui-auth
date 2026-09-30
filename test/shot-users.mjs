@@ -17,16 +17,9 @@ await page.evaluate(async (u, p) => {
   await fetch('/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: u, password: p }) })
 }, admin.user, admin.pass)
 
-// 演示账号（拍完删除）
-const demo = [['alice', 'Alice Chen'], ['bob', 'Bob Li']]
-for (const [name, display] of demo) {
-  await page.evaluate(async (n, d) => {
-    await fetch('/auth/rpc/createUser', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ username: n, password: 'Demo-Pass-1234!', role: 'user', displayName: d }),
-    })
-  }, name, display)
-}
+// 说明：这里**不**临时创建演示账号——本插件对被删除的用户名写永久墓碑，固定演示名一旦删过就无法重建
+//（形如 alice/bob 的名字第二次运行注定失败，容易让人误以为截图脚本坏了）。表格直接展示实例上的真实账号。
+const demo = []
 
 await page.goto(`${base}/`, { waitUntil: 'domcontentloaded' })
 await wait(5000)
@@ -42,6 +35,12 @@ await page.evaluate(() => {
   if (target !== undefined) target.click()
 })
 await wait(2500)
+// 取景对准**用户列表**：README 里这张图叫「用户管理页」，应能看到用户表格本身
+await page.evaluate(() => {
+  const table = document.querySelector('.dshua table')
+  if (table !== null) table.scrollIntoView({ block: 'center' })
+})
+await wait(800)
 const dialog = await page.$('[role=dialog]')
 if (dialog === null) { console.log('未找到设置对话框'); await browser.close(); process.exit(1) }
 await dialog.screenshot({ path: path.join(ASSETS, 'screenshot-users.png') })
