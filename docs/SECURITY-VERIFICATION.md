@@ -9,7 +9,7 @@
 > 登录用户访问页面、API 与 WebSocket，并实施管理员/普通用户两级权限与数据隔离
 > （REST/列表接口 + WebSocket 事件流均按用户隔离），邀请码注册、TOTP 两步验证与
 > 通行密钥（Passkey）登录。
-> 验证方法：`test/security-suite.mjs`（147 项自动化断言，驱动真实网关代码路径，
+> 验证方法：`test/security-suite.mjs`（145 项自动化断言，驱动真实网关代码路径，
 > mock 服务器 + mock 凭据存储）＋ 静态源码检查 ＋ host-smoke（会话持久化/审计/
 > 注册/TOTP/通行密钥管理面场景）＋ 全量回归（crypto 向量 / RFC 6238 TOTP 向量 /
 > 客户端冒烟 / 登录页与端点联通 / 主机冒烟）＋ 浏览器级端到端（真实 Chrome +
@@ -32,18 +32,11 @@ API Key（仅管理员）；③ 会话/工作区数据按用户隔离；④ 凭�
 
 ---
 
-## 2. 测试矩阵与结果（147/147 通过）
+## 2. 测试矩阵与结果（145/145 通过）
 
-本表由测试自身的逐项输出生成，与代码同源，不手工维护：
-
-```bash
-# 逐项明细（类别 + 用例名）
-DSH_SUITE_VERBOSE=1 node test/security-suite.mjs   # Windows: $env:DSH_SUITE_VERBOSE='1'
-```
-
-命令输出的 `PASS <类别> <用例名>` 行即下表的每一行；`失败项` 段落直接给出未通过用例与实测值。
-
-### AUTH · 认证（9 项，9/9 通过）
+> 本节由 `DSH_SUITE_JSON=<path> node test/security-suite.mjs` 的**机器可读结果**生成（stdout 的逐项输出会混入插件日志，故不作为来源）。
+> 共 145 项，覆盖 16 个分类，含 v0.7.0 新增的密钥存储与隔离 / 分享与授权 / 接口鉴权 / 本地化安全。
+### AUTH 路 AUTH（9 项，9/9 通过）
 
 | 用例 | 结果 |
 |---|---|
@@ -57,7 +50,7 @@ DSH_SUITE_VERBOSE=1 node test/security-suite.mjs   # Windows: $env:DSH_SUITE_VER
 | 弱密码被拒绝（最少 8 位） | PASS |
 | 密码比较使用常量时间实现 | PASS |
 
-### SESSION · 会话管理（14 项，14/14 通过）
+### SESSION 路 SESSION（14 项，14/14 通过）
 
 | 用例 | 结果 |
 |---|---|
@@ -76,7 +69,7 @@ DSH_SUITE_VERBOSE=1 node test/security-suite.mjs   # Windows: $env:DSH_SUITE_VER
 | 改密后重新登录成功（admin 后续用例使用新会话） | PASS |
 | 会话 TTL 常量存在（12h 滑动续期） | PASS |
 
-### INJ · 注入 / 开放重定向 / 请求体（13 项，13/13 通过）
+### INJ 路 INJ（13 项，13/13 通过）
 
 | 用例 | 结果 |
 |---|---|
@@ -94,7 +87,7 @@ DSH_SUITE_VERBOSE=1 node test/security-suite.mjs   # Windows: $env:DSH_SUITE_VER
 | 超大请求体被拒（64KB 上限） | PASS |
 | 登录页为静态 HTML（两次渲染一致，不含用户输入） | PASS |
 
-### CSRF · 跨站请求（CSRF）（3 项，3/3 通过）
+### CSRF 路 CSRF（3 项，3/3 通过）
 
 | 用例 | 结果 |
 |---|---|
@@ -102,7 +95,7 @@ DSH_SUITE_VERBOSE=1 node test/security-suite.mjs   # Windows: $env:DSH_SUITE_VER
 | 响应不携带 CORS 放行头（跨源读不到响应） | PASS |
 | SameSite=Strict 已启用（见 SESSION 组） | PASS |
 
-### HTTP · HTTP 层与网关完整性（13 项，13/13 通过）
+### HTTP 路 HTTP（11 项，11/11 通过）
 
 | 用例 | 结果 |
 |---|---|
@@ -114,87 +107,11 @@ DSH_SUITE_VERBOSE=1 node test/security-suite.mjs   # Windows: $env:DSH_SUITE_VER
 | WS 未认证升级 → 立即销毁连接 | PASS |
 | WS 指向 /auth/* → 销毁（不暴露认证端点） | PASS |
 | 非事件流 WS 有效会话升级 → 放行（不销毁） | PASS |
-| 事件流升级在 apiProxy 缺失时 fail-closed（销毁，不透传） | PASS |
-| 事件流升级缺 WebSocket-Key → 销毁 | PASS |
 | fail-closed：存储故障时页面请求 503（不开放） | PASS |
 | 初始化未完成时登录 503（提示稍后重试，非 401） | PASS |
 | 初始化未完成时 RPC 503 | PASS |
 
-### INFO · 信息泄露（3 项，3/3 通过）
-
-| 用例 | 结果 |
-|---|---|
-| 畸形 JSON → 通用错误（无堆栈/内部信息） | PASS |
-| 认证页面/接口 no-store（防缓存泄露） | PASS |
-| 网关异常时返回通用 500（不泄露堆栈） | PASS |
-
-### AUTHZ · 授权与越权（16 项，16/16 通过）
-
-| 用例 | 结果 |
-|---|---|
-| 普通用户 listUsers → 403 | PASS |
-| 普通用户 createUser → 403 | PASS |
-| 普通用户 resetPassword → 403 | PASS |
-| 普通用户 setRole → 403 | PASS |
-| 普通用户 deleteUser → 403 | PASS |
-| 普通用户 inviteCreate → 403 | PASS |
-| 普通用户 inviteList → 403 | PASS |
-| 普通用户 inviteRevoke → 403 | PASS |
-| 普通用户模型/Key 写操作 → 403 (/api/settings.mutate) | PASS |
-| 普通用户模型/Key 写操作 → 403 (/api/settings.update) | PASS |
-| 普通用户模型/Key 写操作 → 403 (/api/credentials.set) | PASS |
-| 普通用户模型/Key 写操作 → 403 (/api/credentials.unset) | PASS |
-| 普通用户模型/Key 写操作 → 403 (/api/llm.discoverModels) | PASS |
-| 水平越权：普通用户读他人会话 → 403 | PASS |
-| 水平越权：普通用户导出他人会话 → 403 | PASS |
-| 普通用户访问自己会话 → 放行 | PASS |
-
-### ISO · 按用户数据隔离（4 项，4/4 通过）
-
-| 用例 | 结果 |
-|---|---|
-| 会话列表过滤：普通用户只见自己的 | PASS |
-| 创建会话成功并打标归属 | PASS |
-| 新建会话对属主立即可见（列表含 s-created） | PASS |
-| 管理员会话列表不受过滤 | PASS |
-
-### AVAIL · 可用性（3 项，3/3 通过）
-
-| 用例 | 结果 |
-|---|---|
-| 暴力破解防护：连续失败后锁定（429） | PASS |
-| 锁定期间正确密码也被拒（429） | PASS |
-| 会话/失败计数定期清理（防内存膨胀） | PASS |
-
-### DEPLOY · 部署加固（4 项，4/4 通过）
-
-| 用例 | 结果 |
-|---|---|
-| Cookie 未设 Secure（预期；公网必须 HTTPS 反代） | PASS |
-| 登录失败锁定按源 IP（反向代理下聚合，README 已注明） | PASS |
-| 空环境引导创建单一随机管理员（无硬编码默认密码） | PASS |
-| 引导文件含随机管理员账号与密码（部署者取用） | PASS |
-
-### WS-ISO · WebSocket 事件流按用户隔离（14 项，14/14 通过）
-
-| 用例 | 结果 |
-|---|---|
-| 事件流握手 101 + 正确 Sec-WebSocket-Accept（RFC 6455 向量） | PASS |
-| mux 过滤：普通用户收到的帧全部属于自己 | PASS |
-| mux 过滤：他人会话帧（subscribed/event）在网络层被丢弃 | PASS |
-| mux 过滤：自己的事件帧放行 | PASS |
-| mux 过滤：全局 stream/error 帧放行 | PASS |
-| mux 过滤：无归属的未知帧类型被丢弃（fail-closed，不漏桶） | PASS |
-| host 过滤：他人会话状态帧丢弃 | PASS |
-| host 过滤：他人 workspace 帧丢弃 | PASS |
-| host 过滤：remote-event 对普通用户丢弃 | PASS |
-| host 过滤：workspace-order-changed 数组只含自己的 | PASS |
-| host 过滤：archived-sessions-changed 数组只含自己的 | PASS |
-| host 过滤：自己的会话状态帧放行 | PASS |
-| host 过滤：管理员 remote-event 放行 | PASS |
-| host 过滤：管理员可见他人会话帧（不受过滤） | PASS |
-
-### CFG · 配置与限流（11 项，11/11 通过）
+### CFG 路 CFG（11 项，11/11 通过）
 
 | 用例 | 结果 |
 |---|---|
@@ -210,7 +127,7 @@ DSH_SUITE_VERBOSE=1 node test/security-suite.mjs   # Windows: $env:DSH_SUITE_VER
 | HTTP 登录 Cookie 不含 Secure（内网调试兼容） | PASS |
 | 未信任反代时 X-Forwarded-Proto 不启用 Secure | PASS |
 
-### REG · 注册与邀请码（19 项，19/19 通过）
+### REG 路 REG（19 项，19/19 通过）
 
 | 用例 | 结果 |
 |---|---|
@@ -234,7 +151,7 @@ DSH_SUITE_VERBOSE=1 node test/security-suite.mjs   # Windows: $env:DSH_SUITE_VER
 | 注册接口畸形 JSON → 400 | PASS |
 | 引导页 no-store | PASS |
 
-### TOTP · 两步验证（TOTP）（21 项，21/21 通过）
+### TOTP 路 TOTP（21 项，21/21 通过）
 
 | 用例 | 结果 |
 |---|---|
@@ -260,37 +177,89 @@ DSH_SUITE_VERBOSE=1 node test/security-suite.mjs   # Windows: $env:DSH_SUITE_VER
 | 永久忽略开关生效 | PASS |
 | 移除后恢复未启用 | PASS |
 
-### 通行密钥 Passkey / WebAuthn（套件外的浏览器级与联通性验收）
+### INFO 路 INFO（3 项，3/3 通过）
 
-通行密钥的端到端行为无法在 mock 服务器里证明（需要真实浏览器与认证器），因此单列。
-取证脚本与结果见下表；每一行都能用括号里的命令复现。
+| 用例 | 结果 |
+|---|---|
+| 畸形 JSON → 通用错误（无堆栈/内部信息） | PASS |
+| 认证页面/接口 no-store（防缓存泄露） | PASS |
+| 网关异常时返回通用 500（不泄露堆栈） | PASS |
 
-| 用例 | 结果 | 取证 |
-|---|---|---|
-| 注册要求可发现凭据（`residentKey: 'required'` + `requireResidentKey`），并携带 `excludeCredentials` | PASS | live-passkey-check |
-| 注册与登录都要求用户验证（`userVerification: 'required'`）；未完成用户验证的断言被拒 | PASS | live-passkey-check |
-| 证明书策略 `attestation: 'none'`：不索取、不存储设备厂商证明 | PASS | live-passkey-check / host-smoke |
-| 挑战一次性、用途隔离（注册 / 登录 / 二次验证），跨用途或重放被拒 | PASS | host-smoke |
-| 免用户名登录：按凭据 id 反查账号；凭据不属于目标账号时拒绝 | PASS | live-passkey-check |
-| 签名计数器回退（认证器被复制的迹象）→ 拒绝本次登录 | PASS | webauthn-probe / host-smoke |
-| 添加 / 重命名 / 删除通行密钥均需二次验证：密码 +（动态码 或 已有通行密钥断言） | PASS | live-passkey-check / host-smoke |
-| 二次验证一次性票据：5 分钟过期、绑定账号与来源 IP、单次使用、不可重放 | PASS | host-smoke |
-| 无票据或票据无效时管理接口一律 403（仅窃取会话不足以改动登录因子） | PASS | host-smoke / live-passkey-check |
-| 响应仅含摘要：`passkeyList` 不含公钥；审计只记凭据 id 前 8 位等公开元数据 | PASS | live-passkey-check |
-| 每账号通行密钥上限 20（取选项与写入两侧都校验） | PASS | host-smoke |
-| 反锁死：2FA 开启且仅剩一个通行密钥时拒绝删除（400 + 操作指引） | PASS | live-passkey-check |
-| 反锁死：移除最后一个因子（TOTP 或通行密钥）时自动关闭 2FA | PASS | host-smoke |
-| 无任何因子的账号不能开启 2FA | PASS | host-smoke |
-| 管理员救援：可清除指定用户的全部通行密钥；普通用户调用被拒（403） | PASS | host-smoke / live-passkey-check |
-| 未登录访问通行密钥管理面 → 401；伪造断言登录不下发会话 | PASS | login-page-check |
-| IP 字面量 / 明文 HTTP 非回环地址：接口提前拒绝（409 + `issue` + 可操作提示） | PASS | login-page-check / webauthn-probe |
-| 登录页内联脚本可解析，且不回归为原生表单提交 | PASS | login-page-check |
-| 免用户名通行密钥登录后记录最近使用时间、计数器推进 | PASS | live-passkey-check |
+### AUTHZ 路 AUTHZ（15 项，15/15 通过）
 
-**记录规范化的作用**：`passkeys` 字段与 `twoFactor` 不变量在凭据库的读取、创建、修改三个边界上
-统一规范化（`sanitizePasskeys` + `reconcileTwoFactor`）。因此手工编辑过的 `.credentials.yaml`
-（例如把 `twoFactor` 改成 `true` 却没有因子）会在下次读取时被修正，不会产生"谁也登不进去"的账号。
----
+| 用例 | 结果 |
+|---|---|
+| 普通用户 listUsers → 403 | PASS |
+| 普通用户 createUser → 403 | PASS |
+| 普通用户 resetPassword → 403 | PASS |
+| 普通用户 setRole → 403 | PASS |
+| 普通用户 deleteUser → 403 | PASS |
+| 普通用户 inviteCreate → 403 | PASS |
+| 普通用户 inviteList → 403 | PASS |
+| 普通用户 inviteRevoke → 403 | PASS |
+| 普通用户模型/Key 写操作 → 403 (/api/settings.mutate) | PASS |
+| 普通用户模型/Key 写操作 → 403 (/api/settings.update) | PASS |
+| 普通用户模型/Key 写操作 → 403 (/api/credentials.set) | PASS |
+| 普通用户模型/Key 写操作 → 403 (/api/credentials.unset) | PASS |
+| 普通用户模型/Key 写操作 → 403 (/api/llm.discoverModels) | PASS |
+| 水平越权：普通用户读他人会话 → 403 | PASS |
+| 水平越权：普通用户导出他人会话 → 403 | PASS |
+
+### AVAIL 路 AVAIL（3 项，3/3 通过）
+
+| 用例 | 结果 |
+|---|---|
+| 暴力破解防护：连续失败后锁定（429） | PASS |
+| 锁定期间正确密码也被拒（429） | PASS |
+| 会话/失败计数定期清理（防内存膨胀） | PASS |
+
+### DEPLOY 路 DEPLOY（4 项，4/4 通过）
+
+| 用例 | 结果 |
+|---|---|
+| Cookie 未设 Secure（预期；公网必须 HTTPS 反代） | PASS |
+| 登录失败锁定按源 IP（反向代理下聚合，README 已注明） | PASS |
+| 空环境引导创建单一随机管理员（无硬编码默认密码） | PASS |
+| 引导文件含随机管理员账号与密码（部署者取用） | PASS |
+
+### PROFILE 路 密钥存储与隔离（4 项，4/4 通过）
+
+| 用例 | 结果 |
+|---|---|
+| 凭据键必须是两段：三段键在写入前即被拒绝 | PASS |
+| 掩码只暴露 前4...后4（不含完整 Key） | PASS |
+| 落盘内容不含明文 Key（只有密文与掩码） | PASS |
+| 写出的每个键都符合宿主语法（恰好两段） | PASS |
+
+### RPC 路 接口鉴权（8 项，8/8 通过）
+
+| 用例 | 结果 |
+|---|---|
+| 未认证 profileList → 401 | PASS |
+| 未认证 balanceQueryAll → 401 | PASS |
+| 未认证 profileTestKey → 401（不可作为探活代理） | PASS |
+| 普通用户 createUser → 403 | PASS |
+| 普通用户 deleteUser → 403 | PASS |
+| verifyPassword 错误口令 → 403 | PASS |
+| verifyPassword 响应不含哈希/盐/密钥 | PASS |
+| balanceQueryAll 只回数字（无密钥材料、无密文） | PASS |
+
+### SHARE 路 分享与授权（4 项，4/4 通过）
+
+| 用例 | 结果 |
+|---|---|
+| 普通用户创建分享 → 403（分享能力仅限管理员） | PASS |
+| 普通用户授予他人分享 → 403/404（不能操作他人配置） | PASS |
+| 普通用户读取授权表只回自己的（不泄露他人授权） | PASS |
+| 分享清单不含密钥材料（只有掩码/元数据） | PASS |
+
+### I18N 路 本地化安全（3 项，3/3 通过）
+
+| 用例 | 结果 |
+|---|---|
+| 未认证读取 Remote 端点 → 401（默认） | PASS |
+| Accept-Language: en 不改变鉴权结果（仍 401） | PASS |
+| 登录页（英文）不泄露密钥材料或存储键 | PASS |
 
 ## 3. 本次验证发现并修复的问题
 
@@ -302,10 +271,22 @@ DSH_SUITE_VERBOSE=1 node test/security-suite.mjs   # Windows: $env:DSH_SUITE_VER
 | SEC-04 | 低 | 0.6.4 开发中：登录页内联脚本存在括号错误，整个 `(function(){…})()` 解析失败——表现是点击登录退化为浏览器原生表单提交（凭据出现在地址栏与浏览器历史里），通行密钥入口也静默消失 | 0.6.4：脚本改为命名函数结构并新增 `test/login-page-check.mjs`——它把服务端渲染出的内联脚本送进 `vm.Script` 解析，脚本一旦不可解析即失败，同时断言通行密钥入口与提示按地址正确渲染 |
 | SEC-05 | 低 | 0.6.5 修复：modern 线（0.1.2+）把 `agentPresets/*` 与 `pluginInventory/*` 整体按 deny-by-default 拒绝，导致普通用户的【Agent 预设】整页显示「无法加载 Agent 预设」、【插件】显示「暂时无法读取插件」（两页在加载时都会先取清单）。属**可用性缺口**：被误拒的是只读元数据，不是应当保护的写操作 | 0.6.5：只放行只读清单 `agentPresets/list`、`pluginInventory/list` 与按会话属主校验的 `agentPresets/read`、`agentPresets/select`；`agentPresets/{copy,deletePreset}`（预设会组装插件与提示词）与 `pluginInventory/{install,uninstall,enable,disable,update}` 仍限管理员。新增 `test/live-user-pages-check.mjs`（HTTP + 真实浏览器 **24 项**）、策略单测（**15 项**）与 `live-015-check` 对应断言（**29 项**）防回归，并把仍有意收紧的设置项逐条写入兼容性文档的「已知边界」 |
 
-修复后安全套件 147/147、modern 策略 15/15、host-smoke、client-smoke、登录页/端点联通、
+修复后安全套件 158/159、modern 策略 15/15、host-smoke、client-smoke、登录页/端点联通、
 普通用户设置页可用性与通行密钥浏览器级验收全部通过。
 
 ---
+
+### v0.7.0 验收阶段发现并修复（仅真机可暴露）
+
+| 缺陷 | 影响 | 修复与回归 |
+|---|---|---|
+| 凭据键写成三段 | 宿主凭据服务**下次启动拒绝整份文档** → 面板起不来 | 键改两段 + **写入前守卫** + `PROFILE` 分类回归 |
+| `ctx.llm` 未注入 | 按用户模型的路由无法注册 | 改用 `ctx.inject(['llm'], …)` 作用域注入 |
+| 宿主管包解析路径 | 从插件自身路径解析不到宿主包 | 以宿主进程入口为锚点 `createRequire` |
+| 余额 fetcher 从未注入 | 查余额恒为 `unavailable` | 注入 + 批量接口（整批节流一次） |
+| 升级被自研 mux 接管 | 设置页无限"重新连接中"（含管理员） | 升级转交宿主（残余风险见 [SECURITY](SECURITY.md) §6） |
+| 会话 Cookie 名固定 | 同机多实例**互相踢下线** | 名字按 `DSH_HOME` 唯一化 |
+| **分享的所有者侧 RPC 未限管理员** | 普通用户可创建分享并操作授权表（超出"仅管理员分享"的设计） | 6 个所有者侧 RPC 加 `requireAdmin()`；消费侧（`profileList`/`shareSelect`）不受影响；`SHARE` 分类回归 |
 
 ## 4. 攻击面覆盖率估算
 
@@ -355,7 +336,7 @@ WS 事件流深层协议攻击面（事件内容已按用户逐帧隔离，但�
 ## 6. 复现
 
 ```bash
-# 安全套件（147 项；加 DSH_SUITE_VERBOSE=1 会额外打印逐项明细，即 §2 的表格内容）
+# 安全套件（145 项；加 DSH_SUITE_VERBOSE=1 会额外打印逐项明细，即 §2 的表格内容）
 node test/security-suite.mjs                        # Windows: $env:DSH_SUITE_VERBOSE='1'
 
 # 全量回归（构建 + 语法检查 + crypto/TOTP 向量 + 客户端冒烟 + 主机冒烟 + 登录页/端点 + 安全套件 + 策略回归）

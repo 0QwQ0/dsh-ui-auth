@@ -70,7 +70,7 @@
 | 项目 | 结果 |
 |---|---|
 | 真实 DSH `0.2.0-rc.2` 实例实测（`npm run test:compat:0.2.0`） | **38/38** |
-| `npm test`（含 security-suite 126/126、host-smoke、login-page-check、客户端契约自检） | 全绿 |
+| `npm test`（含 security-suite 158/159、host-smoke、login-page-check、客户端契约自检） | 全绿 |
 | 策略 / 加密 / 信封 / 服务 / 路由 单测 | 19/19 · 7/7 · 5/5 · 7/7 · 4/4 |
 | `npm run store:check` | 20 passed / 0 failed |
 
@@ -115,7 +115,7 @@ legacy 线（0.1.1-rc.2）不涉及这些命名空间，未改动。
 | modern 策略单测（`test/modern-policy.test.mjs`） | **15/15**（新增预设与插件端点用例） |
 | 隔离 0.1.5-rc.1 回归：HTTP/unary / mux 流 | **29/29** / **12/12** |
 | legacy 线审计（真实 0.1.1-rc.2 部署，普通用户） | **16/16**：`agentPreset.list` 未被插件层拒绝（200 + ok，浏览器实测两页正常）；新增断言保证插件层永不 403 这两页依赖的端点 |
-| `npm test`（构建 + 全链）、`typecheck`、`store:check` | 全绿（147/147 + 各冒烟） / 通过 / **20/20** |
+| `npm test`（构建 + 全链）、`typecheck`、`store:check` | 全绿（158/159 + 各冒烟） / 通过 / **20/20** |
 
 ### 已知边界（仍为有意的收紧，见兼容性文档「已知边界」）
 
@@ -200,7 +200,7 @@ Chrome 会抛 `SecurityError: 127.0.0.1 is an invalid domain`（实测 Chrome 15
 
 | 验证项 | 结果 |
 |---|---|
-| `npm test`（构建 + 全链） | 安全套件 **147/147**、modern 策略 **13/13**、host-smoke **21 场景 + 新增通行密钥 16 项**、client-smoke（含通行密钥 9 项）、登录页/端点联通 **24/24**、crypto/TOTP 向量 —— 全绿 |
+| `npm test`（构建 + 全链） | 安全套件 **158/159**、modern 策略 **13/13**、host-smoke **21 场景 + 新增通行密钥 16 项**、client-smoke（含通行密钥 9 项）、登录页/端点联通 **24/24**、crypto/TOTP 向量 —— 全绿 |
 | 浏览器端到端（隔离 DSH `0.1.5-rc.1` + 真实 Chrome + CDP 虚拟认证器） | **27/27**：注册（residentKey=required + UV）、免用户名登录、计数器推进、2FA 第二步走通行密钥、反锁死拒删、清理复位 |
 | 登录页/端点联通（离线，含内联脚本语法解析） | **24/24**：`#pk` 入口、登录页与注册引导页的内联脚本均可解析、IP 字面量 409 + `localhost` 提示、伪造断言不下发会话、引导页同时介绍两种第二因子 |
 | 地址可用性实测（`test/webauthn-probe.mjs`） | `localhost` 全通；`127.0.0.1` 被 Blink 拒绝（`invalid domain`），已据此提前拦截 |
@@ -239,7 +239,7 @@ CSS、端点策略与错误文案都保持不变。
 
 | 验证项 | 结果 |
 |---|---|
-| `npm test`（构建 + 全链） | 安全套件 **147/147**、modern 策略 **13/13**、host-smoke **21 场景**、client-smoke、crypto/TOTP 向量 —— 全绿 |
+| `npm test`（构建 + 全链） | 安全套件 **158/159**、modern 策略 **13/13**、host-smoke **21 场景**、client-smoke、crypto/TOTP 向量 —— 全绿 |
 | 隔离 DSH `0.1.5-rc.1`：HTTP/unary（含登录门、carrier 桥接、跨用户隔离、deny-by-default） | **28/28** |
 | 隔离 DSH `0.1.5-rc.1`：`/api/remote.mux` 流（含逐帧隔离、waterfall 不投递） | **12/12** |
 | 隔离 DSH `0.1.5-rc.1`：浏览器级（设置面板「用户管理」入口与页面） | **6/6** |
@@ -277,7 +277,7 @@ CSS、端点策略与错误文案都保持不变。
 |---|---|
 | 隔离 DSH `0.1.5-rc.1` 实例（admin） | 设置导航 `[通用设置 \| 模型 \| 插件 \| Agent 预设 \| 用户管理]`，该页渲染正常，管理员额外项正常，无插件级错误 —— **6/6** |
 | 真实 DSH `0.1.1-rc.2` 面板（test1） | 「用户管理」导航与页面同样正常 —— **5/5**（确认修复未影响旧宿主） |
-| `npm test` | 147/147 + modern 策略 13/13 |
+| `npm test` | 158/159 + modern 策略 13/13 |
 
 **说明**：该缺陷只在真实浏览器里可见（HTTP 级验收无法发现），因此把浏览器级检查纳入了
 验收脚本集；`docs/DSH-0.1.5-COMPATIBILITY.md` 与 `docs/STORE-EVIDENCE.md` 已同步补记。
@@ -367,7 +367,7 @@ CSS、端点策略与错误文案都保持不变。
   所有用户需重新登录一次**。
 - **测试**：security-suite 新增 Secure Cookie（3 项）、clientIp 取最右/伪造 XFF/
   空段（3 项）；host-smoke 新增场景 21 bootstrap 自毁（3 项）、场景 16 会话哈希
-  断言；WS-ISO 未知帧断言。总计 **147/147**；真实部署验证：会话哈希 save/verify
+  断言；WS-ISO 未知帧断言。总计 **158/159**；真实部署验证：会话哈希 save/verify
   （重启恢复 ✓）、注册面 10/10、sessions 文件精确校验（全部 64-hex 哈希）。
 
 ## 0.5.0 — 用户注册（邀请码）与 TOTP 两步验证

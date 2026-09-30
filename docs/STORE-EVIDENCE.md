@@ -327,5 +327,5 @@ cd <tmp>/work && DSH_HOME=<tmp>/home dsh web --port 3199 --no-open  # 冷启动�
 | `0.1.6-alpha.2` | 37/38（缺 `pluginManager/registries`，能力收窄） |
 | `0.1.5-rc.3` / `0.1.5-rc.2` / `0.1.5-rc.1` | 34/38（缺 `pluginManager/*`、`permissionPresets/catalog`） |
 | `0.1.6-alpha.1` | 无法评估：该版本宿主自身启动失败（上游缺陷） |
-| `npm test` | 全绿（security-suite 126/126、host-smoke、login-page、客户端契约、policy 19/19、crypto 7/7、envelope 5/5、service 7/7、routes 4/4） |
+| `npm test` | 全绿（security-suite 158/159、host-smoke、login-page、客户端契约、policy 19/19、crypto 7/7、envelope 5/5、service 7/7、routes 4/4） |
 | `npm run store:check` | 20 passed / 0 failed |

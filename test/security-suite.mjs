@@ -5,7 +5,7 @@
 // 部署加固 10 类。运行：node test/security-suite.mjs
 // ============================================================================
 import { EventEmitter } from 'node:events'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { apply, readLockConfig, clientIp, totpCodeAt } from '../lib/index.js'
 
 // 会话 Cookie 名由插件按 DSH_HOME 派生（同一实例内稳定、实例间不同）；测试用同一公式。
@@ -782,6 +782,106 @@ for (const c of order) {
   const flag = s.pass === s.total ? 'PASS' : 'FAIL'
   console.log(`${flag}  ${c.padEnd(8)} ${s.pass}/${s.total}`)
 }
+// ===== v0.7.0 新增面：按用户密钥存储 / 分享鉴权 / 新 RPC / 本地化安全不变式 =====
+{
+  const rpcCall = (method, body, cookie) => new Promise((resolve) => {
+    const r = makeRes()
+    server.emit('request', makeReq('POST', '/auth/rpc/' + method, cookie, JSON.stringify(body || {})), r)
+    setTimeout(() => resolve(r), 80)
+  })
+  const bodyOf = (response) => JSON.stringify(parseJson(response) || {})
+
+  // —— PROFILE：存储与密钥不变量 ——
+  const { profileKey, ProfileStore, keyHint } = await import('../lib/model-profiles.js')
+  let grammarRejected = false
+  try { profileKey('profile-kdf/uid') } catch (error) { grammarRejected = true }
+  check('PROFILE', '凭据键必须是两段：三段键在写入前即被拒绝', grammarRejected)
+  check('PROFILE', '掩码只暴露 前4...后4（不含完整 Key）', keyHint('sk-abcdef1234567890') === 'sk-a...7890')
+
+  const written = []
+  const seam = {
+    async readRaw() { return undefined },
+    async writeRaw(key, value) { written.push({ key, value }) },
+    async modifyRaw() { return undefined },
+    async deleteRaw() {},
+  }
+  const store = new ProfileStore(seam)
+  await store.ensureUid('alice')
+  await store.writePrivate('uid-alice', {
+    profileId: 'p1', label: 'a', provider: 'deepseek', model: 'deepseek-chat', hint: 'sk-a...7890',
+    sealed: { v: 1, alg: 'AES-256-GCM', iv: 'x', ct: 'y' }, createdAt: 'now', updatedAt: 'now',
+  })
+  check('PROFILE', '落盘内容不含明文 Key（只有密文与掩码）',
+    written.length > 0 && written.every(entry => !JSON.stringify(entry.value).includes('sk-abcdef1234567890')))
+  check('PROFILE', '写出的每个键都符合宿主语法（恰好两段）',
+    written.every(entry => /^[a-z0-9-]+\/[a-z0-9-]+$/.test(entry.key)))
+
+  // —— RPC：新方法的认证面 ——
+  const anonProfile = await rpcCall('profileList', {}, 'bogus-token')
+  check('RPC', '未认证 profileList → 401', anonProfile.status === 401)
+  const anonBalance = await rpcCall('balanceQueryAll', {}, 'bogus-token')
+  check('RPC', '未认证 balanceQueryAll → 401', anonBalance.status === 401)
+  const anonTest = await rpcCall('profileTestKey', { apiKey: 'sk-x' }, 'bogus-token')
+  check('RPC', '未认证 profileTestKey → 401（不可作为探活代理）', anonTest.status === 401)
+
+  const userCreate = await rpcCall('createUser', { username: 'probe-u', password: 'Str0ng-pass-1234' }, test1Cookie)
+  check('RPC', '普通用户 createUser → 403', userCreate.status === 403)
+  const userDelete = await rpcCall('deleteUser', { username: 'admin' }, test1Cookie)
+  check('RPC', '普通用户 deleteUser → 403', userDelete.status === 403)
+
+  const wrongPw = await rpcCall('verifyPassword', { password: 'definitely-wrong' }, test1Cookie)
+  check('RPC', 'verifyPassword 错误口令 → 403', wrongPw.status === 403)
+  check('RPC', 'verifyPassword 响应不含哈希/盐/密钥',
+    !bodyOf(wrongPw).includes('hash') && !bodyOf(wrongPw).includes('salt') && !bodyOf(wrongPw).includes('sk-'))
+
+  const balance = await rpcCall('balanceQueryAll', {}, test1Cookie)
+  check('RPC', 'balanceQueryAll 只回数字（无密钥材料、无密文）',
+    balance.status === 200 || balance.status === 429 ? !bodyOf(balance).includes('sk-') && !bodyOf(balance).includes('sealed') : false)
+
+  // —— SHARE：分享与授权的边界 ——
+  const userShare = await rpcCall('shareCreate', { label: 'probe', model: 'deepseek-chat', apiKey: 'sk-probe' }, test1Cookie)
+  check('SHARE', '普通用户创建分享 → 403（分享能力仅限管理员）', userShare.status === 403)
+  const userGrant = await rpcCall('shareGrant', { profileId: 'not-mine', username: 'admin' }, test1Cookie)
+  check('SHARE', '普通用户授予他人分享 → 403/404（不能操作他人配置）',
+    userGrant.status === 403 || userGrant.status === 404)
+  const userGrants = await rpcCall('shareGrants', {}, test1Cookie)
+  const grantsOk = userGrants.status === 200
+    ? (parseJson(userGrants).grants || []).length === 0
+    : userGrants.status === 403
+  check('SHARE', '普通用户读取授权表只回自己的（不泄露他人授权）', grantsOk)
+  const userOwn = await rpcCall('shareOwn', {}, test1Cookie)
+  const ownOk = userOwn.status === 200
+    ? (parseJson(userOwn).shared || []).every(entry => entry.sealed === undefined && entry.wrappedDek === undefined && entry.apiKey === undefined)
+    : userOwn.status === 403
+  check('SHARE', '分享清单不含密钥材料（只有掩码/元数据）', ownOk)
+
+  // —— I18N：本地化不得改变安全行为 ——
+  {
+    const r = makeRes()
+    server.emit('request', makeReq('GET', '/api/session.list', undefined, undefined), r)
+    await settle()
+    check('I18N', '未认证读取 Remote 端点 → 401（默认）', r.status === 401)
+  }
+  {
+    const r = makeRes()
+    const req = makeReq('GET', '/api/session.list', undefined, undefined)
+    req.headers['accept-language'] = 'en-US,en;q=0.9'
+    server.emit('request', req, r)
+    await settle()
+    check('I18N', 'Accept-Language: en 不改变鉴权结果（仍 401）', r.status === 401)
+  }
+  {
+    const r = makeRes()
+    const req = makeReq('GET', '/auth/login', undefined, undefined)
+    req.headers['accept-language'] = 'en-US,en;q=0.9'
+    server.emit('request', req, r)
+    await settle()
+    const html = String(r.body ?? '')
+    check('I18N', '登录页（英文）不泄露密钥材料或存储键',
+      html.length > 0 && !html.includes('sk-') && !html.includes('sealed') && !html.includes('dsh-auth/'))
+  }
+}
+
 const failed = results.filter((r) => !r.pass)
 console.log(`\n总计: ${results.length - failed.length}/${results.length} 通过`)
 if (failed.length > 0) {
@@ -794,5 +894,19 @@ if (failed.length > 0) {
 if (process.env.DSH_SUITE_VERBOSE === '1') {
   console.log('\n================ 逐项明细 ================')
   for (const r of results) console.log(`${r.pass ? 'PASS' : 'FAIL'}  ${r.category.padEnd(8)} ${r.label}`)
+}
+// 机器可读结果（供报告生成与 CI）：stdout 的逐项 dump 会混入插件日志，以本文件为准。
+if (process.env.DSH_SUITE_JSON !== undefined && process.env.DSH_SUITE_JSON !== '') {
+  const byCategory = {}
+  for (const r of results) {
+    byCategory[r.category] = byCategory[r.category] ?? { total: 0, passed: 0, cases: [] }
+    byCategory[r.category].total += 1
+    if (r.pass) byCategory[r.category].passed += 1
+    byCategory[r.category].cases.push({ label: r.label, pass: r.pass })
+  }
+  try {
+    writeFileSync(process.env.DSH_SUITE_JSON, JSON.stringify(
+      { total: results.length, passed: results.length - failed.length, failed: failed.length, categories: byCategory }, null, 2))
+  } catch (error) { /* 导出失败不影响判定 */ }
 }
 process.exit(failed.length === 0 ? 0 : 1)

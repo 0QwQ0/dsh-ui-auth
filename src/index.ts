@@ -2416,6 +2416,7 @@ const COOKIE_NAME = 'dsh_auth_' + (() => {
           })
           return
         case 'shareOwn':
+          if (!requireAdmin()) return
           await runProfile(async (service, uid) => {
             sendJson(res, 200, { ok: true, shared: await service.listGrantedProfiles(uid) })
           })
@@ -2427,6 +2428,7 @@ const COOKIE_NAME = 'dsh_auth_' + (() => {
           })
           return
         case 'shareCreate':
+          if (!requireAdmin()) return
           await runProfile(async (service, uid) => {
             const created = await service.createShared(uid, {
               label: str(args.label, 60) || '分享配置',
@@ -2441,6 +2443,7 @@ const COOKIE_NAME = 'dsh_auth_' + (() => {
           })
           return
         case 'shareGrant': {
+          if (!requireAdmin()) return
           const target = str(args.username, 60)
           const targetUid = target === '' || store === null ? undefined : await new ProfileStore(store).uidOf(target)
           if (targetUid === undefined) { sendJson(res, 404, { error: '目标用户不存在或尚未分配配置标识' }); return }
@@ -2453,6 +2456,7 @@ const COOKIE_NAME = 'dsh_auth_' + (() => {
           return
         }
         case 'shareRevoke': {
+          if (!requireAdmin()) return
           const target = str(args.username, 60)
           const targetUid = target === '' || store === null ? undefined : await new ProfileStore(store).uidOf(target)
           if (targetUid === undefined) { sendJson(res, 404, { error: '目标用户不存在' }); return }
@@ -2464,6 +2468,7 @@ const COOKIE_NAME = 'dsh_auth_' + (() => {
           return
         }
         case 'shareGrants': {
+          if (!requireAdmin()) return
           await runProfile(async (service, uid) => {
             // 授权表里只有 uid：映射回用户名，界面才能直接显示"授权给了谁"并给出撤销按钮。
             const byUid = new Map<string, string>()
@@ -2482,6 +2487,7 @@ const COOKIE_NAME = 'dsh_auth_' + (() => {
           return
         }
         case 'shareUsage':
+          if (!requireAdmin()) return
           await runProfile(async (service, uid) => {
             sendJson(res, 200, { ok: true, usage: await service.usageFor(uid) })
           })
