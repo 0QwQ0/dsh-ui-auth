@@ -1009,6 +1009,82 @@
 			return String((e && (e.message || e.error || e.code)) || e)
 		}
 
+		// ============ 分享管理（管理员；v0.7.0） ============
+		// 管理员把自己的模型分享给指定用户：被授权者可用、可看余额，但看不到 Key；
+		// 同时展示每条分享的用量（谁用了多少次、多少 token）——用量不含任何 Key 材料。
+		function SharesPage() {
+			var st = React.useState({ loaded: false, shared: [] as any[], usage: [] as any[], error: '' })
+			var state = st[0], setState = st[1]
+			var fm = React.useState({ label: '', model: 'deepseek-chat', apiKey: '' })
+			var form = fm[0], setForm = fm[1]
+			var gr = React.useState({ profileId: '', username: '' })
+			var grant = gr[0], setGrant = gr[1]
+
+			function refresh() {
+				Promise.all([rpc('shareOwn', {}), rpc('shareUsage', {})]).then(function (r) {
+					setState({ loaded: true, shared: r[0].shared || [], usage: r[1].usage || [], error: '' })
+				}).catch(function (e) {
+					setState({ loaded: true, shared: [], usage: [], error: errText(e) })
+				})
+			}
+			React.useEffect(function () { refresh() }, [])
+			function act(method: string, body: Record<string, unknown>): void {
+				rpc(method, body).then(function () { refresh() }).catch(function (e) {
+					setState(function (prev: any) { return { ...prev, error: errText(e) } })
+				})
+			}
+			function usageOf(profileId: string): string {
+				var rows = state.usage.filter(function (u: any) { return u.profileId === profileId })
+				if (rows.length === 0) return '暂无用量'
+				return rows.map(function (u: any) { return String(u.targetUid).slice(0, 8) + ': ' + u.calls + ' 次 / ' + u.tokens + ' tokens' }).join('；')
+			}
+
+			var children: any[] = []
+			children.push(React.createElement('h2', null, '分享管理'))
+			children.push(React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 13, lineHeight: '20px', marginBottom: 12 } },
+				'把你的模型分享给指定用户：对方可以选用并查看余额，但看不到你的 API Key；撤销后立即失效。'))
+			if (state.error !== '') {
+				children.push(React.createElement('div', { style: { color: 'var(--dsw-alias-label-error, #ff6b6b)', marginBottom: 10 } }, state.error))
+			}
+			children.push(React.createElement('div', { key: 'new', style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 } },
+				React.createElement('input', { placeholder: '分享名称', value: form.label, onChange: function (e: any) { setForm({ ...form, label: e.target.value }) } }),
+				React.createElement('input', { placeholder: '模型', value: form.model, onChange: function (e: any) { setForm({ ...form, model: e.target.value }) } }),
+				React.createElement('input', { type: 'password', placeholder: 'API Key', value: form.apiKey, onChange: function (e: any) { setForm({ ...form, apiKey: e.target.value }) } }),
+				React.createElement('button', {
+					disabled: form.model === '' || form.apiKey === '',
+					onClick: function () {
+						act('shareCreate', { label: form.label, provider: 'deepseek', model: form.model, apiKey: form.apiKey })
+						setForm({ label: '', model: 'deepseek-chat', apiKey: '' })
+					},
+				}, '创建分享配置')))
+			state.shared.forEach(function (p: any) {
+				children.push(React.createElement('div', { key: p.profileId, style: { padding: '6px 0', borderTop: '1px solid var(--dsw-alias-border-l2)' } },
+					React.createElement('div', null, (p.label || '分享') + ' · ' + p.model),
+					React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 12 } }, '用量：' + usageOf(p.profileId)),
+					React.createElement('div', { style: { display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap' } },
+						React.createElement('input', {
+							placeholder: '授予用户名', value: grant.profileId === p.profileId ? grant.username : '',
+							onChange: function (e: any) { setGrant({ profileId: p.profileId, username: e.target.value }) },
+						}),
+						React.createElement('button', {
+							onClick: function () {
+								act('shareGrant', { profileId: p.profileId, username: grant.username })
+								setGrant({ profileId: '', username: '' })
+							},
+						}, '授予'),
+						React.createElement('button', {
+							onClick: function () {
+								act('shareRevoke', { profileId: p.profileId, username: grant.username })
+								setGrant({ profileId: '', username: '' })
+							},
+						}, '撤销'))))
+			})
+			if (state.loaded && state.shared.length === 0) {
+				children.push(React.createElement('div', { key: 'empty', style: { color: 'var(--dsw-alias-label-secondary)' } }, '还没有分享配置。'))
+			}
+			return React.createElement('div', { className: 'dshua' }, React.createElement('div', { className: 'card' }, children))
+		}
+
 		// ============ 登录后 TOTP 提醒弹窗（未绑定且未永久忽略时；同一会话只弹一次） ============
 		function showTotpReminder() {
 			if (typeof document === "undefined") return
@@ -1083,6 +1159,15 @@
 						return slots!.register(
 							{ name: 'settings.section', id: 'models', order: 10, priority: -1, label: function () { return '模型与密钥' } },
 							function () { return React.createElement(UserModelsPage) },
+						)
+					})
+				}
+				// 管理员：分享管理（把自己的模型分享给指定用户，并看待用量）
+				if (j.me !== undefined && j.me.role === 'admin') {
+					slots!.inject('settings.section', function () {
+						return slots!.register(
+							{ name: 'settings.section', id: 'auth-shares', order: 31, label: function () { return '分享管理' } },
+							function () { return React.createElement(SharesPage) },
 						)
 					})
 				}
