@@ -11,11 +11,11 @@
  * 再用新 KEK 重包裹；会话**不持有口令**，登出即丢弃 userKek。
  */
 import {
-  DEFAULT_KDF_ITERATIONS, deriveKek, openUnder, randomDek, sealUnder,
+  DEFAULT_KDF_ITERATIONS, deriveKek, openUnder, profileKey, randomDek, sealUnder,
   type ProfileSeam, type SealedKey,
 } from './model-profiles.js'
 
-const keyKdf = (uid: string): string => `dsh-auth/profile-kdf/${uid}`
+const keyKdf = (uid: string): string => profileKey(`profile-kdf-${uid}`)
 
 interface KdfDoc {
   readonly v: 1

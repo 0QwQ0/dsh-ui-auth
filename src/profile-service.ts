@@ -9,7 +9,7 @@
  * - **余额只返回数字**：服务端代查 + 60s 缓存 + 每用户最小间隔限流。
  */
 import {
-  ProfileStore, keyHint, loadMasterKey, openShared, sealShared,
+  ProfileStore, keyHint, loadMasterKey, openShared, profileKey, sealShared,
   type PrivateProfile, type ProfileSeam, type ReceivedShare, type SharedProfile,
 } from './model-profiles.js'
 import {
@@ -17,8 +17,8 @@ import {
   sealPrivateWithKek, writeUserKdf, type KekRegistry,
 } from './profile-kek.js'
 
-const keyDefault = (uid: string): string => `dsh-auth/profile-default/${uid}`
-const keyUsage = (uid: string): string => `dsh-auth/profile-usage/${uid}`
+const keyDefault = (uid: string): string => profileKey(`profile-default-${uid}`)
+const keyUsage = (uid: string): string => profileKey(`profile-usage-${uid}`)
 const MAX_COUNTER = Number.MAX_SAFE_INTEGER
 
 /** 分享用量：所有者 uid → { 被授权者 uid → { 配置 id → 计数 } }。 */

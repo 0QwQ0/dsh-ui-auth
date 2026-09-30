@@ -49,6 +49,12 @@ export const inject = ['webServer', 'connection']
  */
 interface CordisContext extends ModernGatewayContext {
   get(name: string): any
+  /**
+   * Cordis 作用域注入：只在列出的服务可用时运行回调，并把一个**可以合法访问这些服务属性**的
+   * 作用域上下文交给它。R1-ii 需要访问 `ctx.llm`（注册 provider 路由），但认证网关本身不应依赖 LLM，
+   * 所以用作用域注入而不是把 `llm` 加进插件级 `inject`（那会让整个插件等待 LLM 服务）。
+   */
+  inject?(names: string[], callback: (scoped: CordisContext) => void): unknown
 }
 
 /** 用户记录（credentials 的 `dsh-auth/<key>` grant payload）。 */
@@ -672,8 +678,8 @@ export function apply(ctx: CordisContext): void {
       }
     }
 
-    void (async () => {
-      const register = await createDeepSeekRegistrar(ctx)
+    const startUserRoutes = async (scoped: CordisContext): Promise<void> => {
+      const register = await createDeepSeekRegistrar(scoped)
       if (register === undefined) {
         console.error('[dsh-ui-auth] 宿主未提供 dsh-llm-deepseek / dsh-launch-environment：'
           + '按用户模型的调用路径（R1-ii）不可用；界面与存储隔离仍然生效，未配置的用户继续被阻断。')
@@ -689,7 +695,15 @@ export function apply(ctx: CordisContext): void {
         routeOwner.clear()
       }, 'dsh-ui-auth: 释放用户 provider 路由')
       await syncAllRoutes()
-    })()
+    }
+    // 作用域注入 `llm`：Cordis 要求声明注入后才能访问 `ctx.llm`（registerDeepSeekProvider 内部会用到），
+    // 而认证网关本身不依赖 LLM——因此只让这部分等待该服务，不把 `llm` 加进插件级 inject。
+    if (typeof ctx.inject === 'function') {
+      ctx.inject(['llm'], (scoped) => { void startUserRoutes(scoped) })
+    } else {
+      // 测试 harness / 老宿主没有作用域注入：直接尝试（缺服务时 createDeepSeekRegistrar 会返回 undefined）。
+      void startUserRoutes(ctx)
+    }
 
     /**
      * 用户记录边界规范化：任何读入或写出的记录都经过这里。

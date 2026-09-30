@@ -11,6 +11,8 @@
  * 因此：用户私有 Key **不写入**宿主明文凭据存储（INV-4 保持成立），也不必重写协议实现。
  * 每个"用户配置"对应一条路由（如 `ui-auth-a1b2c3d4`），路由生命周期跟随配置的增删。
  */
+import { createRequire } from 'node:module'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 /** 一条用户路由的注册所需信息。 */
 export interface UserRouteSpec {
@@ -108,7 +110,30 @@ export class UserRouteRegistry {
  * 不在本插件的依赖里，写成字面量会让 `tsc` 去解析一个我们不安装的包。变量化后类型为 `any`，
  * 我们只按下文实际用到的成员取用，并保留结构校验（缺 `registerDeepSeekProvider` 即视为不可用）。
  */
+/**
+ * 解析宿主管包并导入。
+ *
+ * **为什么不能直接 `import('@deepseek-ai/dsh-llm-deepseek')`**：这些包属于宿主的组合树，
+ * 只存在于**宿主进程自己的 node_modules**（CLI 安装处）。profile 的 node_modules 里没有它们，
+ * 本插件又是从仓库/自身包目录加载的——Node 会从我们自己的路径向上找，永远找不到。
+ * 因此以**宿主进程入口**（`process.argv[1]`，即 CLI 的 bin.js）为锚点建 `createRequire`，
+ * 从宿主的解析根去 resolve，再动态 import 解析出的绝对路径。
+ */
 async function importHostModule(name: string): Promise<Record<string, unknown> | undefined> {
+  const anchors: string[] = []
+  const entry = process.argv[1]
+  if (typeof entry === 'string' && entry !== '') anchors.push(entry)
+  anchors.push(fileURLToPath(import.meta.url))
+  for (const anchor of anchors) {
+    try {
+      const require = createRequire(anchor)
+      const resolved = require.resolve(name)
+      const url = pathToFileURL(resolved).href
+      return await import(url) as Record<string, unknown>
+    } catch (error) {
+      // 换下一个锚点；全部失败则由调用方决定降级（当前是明确停用 R1-ii 并打日志）。
+    }
+  }
   try {
     return await import(name) as Record<string, unknown>
   } catch (error) {
@@ -128,6 +153,7 @@ export async function createDeepSeekRegistrar(ctx: {
   const registerDeepSeekProvider = deepseek.registerDeepSeekProvider as undefined | ((ctx: unknown, provider: string, hooks: unknown) => unknown)
   const catalogModelInfo = deepseek.catalogModelInfo as undefined | ((provider: string, model: unknown) => unknown)
   const deepSeekConfigFields = deepseek.deepSeekConfigFields as unknown
+  const protocolConfig = deepseek.Config as undefined | ((value: unknown) => unknown)
   const plainOptions = deepseek.plainOptions as undefined | ((config: unknown) => Record<string, unknown>)
   const resolveAdapterOptions = deepseek.resolveAdapterOptions as undefined | ((config: unknown, env: unknown) => unknown)
   if (typeof registerDeepSeekProvider !== 'function' || typeof plainOptions !== 'function'
@@ -139,14 +165,22 @@ export async function createDeepSeekRegistrar(ctx: {
   if (typeof launchEnvironmentOf !== 'function') return undefined
 
   return (spec: UserRouteSpec): (() => void) => {
-    // 该路由的连接事实：沿用宿主默认的协议配置，仅把模型列表收窄到该配置声明的模型。
-    const baseFields = plainOptions(deepSeekConfigFields)
+    // 连接事实必须来自**官方 schema 物化的默认值**：直接把 schema 字段对象喂给 plainOptions 会得到
+    // 一堆未解析的字段（实测报错 `defaultContextWindow must be a positive integer`）。
+    // 因此先用协议 Config 解析一个空对象拿到合法默认，再只把模型列表收窄到该配置声明的模型。
+    let materialized: unknown
+    try {
+      materialized = typeof protocolConfig === 'function' ? protocolConfig({}) : {}
+    } catch (error) {
+      materialized = {}
+    }
+    const baseFields = plainOptions(materialized)
     const declared = Array.isArray(baseFields.models) ? (baseFields.models as Array<{ id?: string }>) : []
     const matched = declared.filter(model => model.id === spec.model)
     const config = {
       ...baseFields,
       ...(spec.baseUrl === undefined ? {} : { baseURL: spec.baseUrl }),
-      models: matched.length > 0 ? matched : [{ id: spec.model }],
+      models: matched.length > 0 ? matched : [{ ...(declared[0] ?? {}), id: spec.model }],
     }
     const options = () => resolveAdapterOptions(config, launchEnvironmentOf(ctx))
     const registered = registerDeepSeekProvider(ctx, spec.routeId, {

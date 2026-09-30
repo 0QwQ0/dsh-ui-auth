@@ -17,12 +17,24 @@ export interface ProfileSeam {
   writeRaw(key: string, payload: string): Promise<void>
 }
 
-const KEY_MASTER = 'dsh-auth/profile-master'
-const KEY_UIDS = 'dsh-auth/profile-uids'
-const keyPrivate = (uid: string): string => `dsh-auth/profile-private/${uid}`
-const keyShared = (uid: string): string => `dsh-auth/profile-shared/${uid}`
-const keyGrants = (uid: string): string => `dsh-auth/profile-grants/${uid}`
-const keyReceived = (uid: string): string => `dsh-auth/profile-received/${uid}`
+/**
+ * 凭据记录的键：宿主语法是**恰好两段** `<scope>/<id>`，且两段都必须是
+ * 小写连字符标识符。早期版本写成三段（`dsh-auth/profile-kdf/<uid>`）会让宿主的
+ * 凭据服务在下次启动时解析失败，进而**整个宿主起不来**——所以这里在写入前就校验。
+ */
+export function profileKey(id: string): string {
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) {
+    throw new Error(`非法的凭据记录 id（需小写连字符）：${id}`)
+  }
+  return `dsh-auth/${id}`
+}
+
+const KEY_MASTER = profileKey('profile-master')
+const KEY_UIDS = profileKey('profile-uids')
+const keyPrivate = (uid: string): string => profileKey(`profile-private-${uid}`)
+const keyShared = (uid: string): string => profileKey(`profile-shared-${uid}`)
+const keyGrants = (uid: string): string => profileKey(`profile-grants-${uid}`)
+const keyReceived = (uid: string): string => profileKey(`profile-received-${uid}`)
 
 /** 私有配置的密文（含 KDF 参数；版本化以便将来换算法）。 */
 export interface SealedKey {
@@ -316,6 +328,10 @@ export class ProfileStore {
   }
 
   private async write(key: string, value: unknown): Promise<void> {
+    const segments = key.split('/')
+    if (segments.length !== 2 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(segments[1] ?? '')) {
+      throw new Error(`拒绝写入非法凭据键（宿主要求 <scope>/<id>）：${key}`)
+    }
     await this.seam.writeRaw(key, JSON.stringify(value))
   }
 }
