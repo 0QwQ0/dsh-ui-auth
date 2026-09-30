@@ -22,6 +22,8 @@ function makeReq(method, url, cookie, body, ip = '127.0.0.1') {
   req.method = method
   req.url = url
   req.headers = {}
+  // 真实宿主总会带上 Host（现代网关 prepare() 依赖它铸造原生载体 Cookie）
+  req.headers.host = 'localhost:3080'
   if (cookie !== undefined) req.headers.cookie = 'dsh_auth=' + cookie
   req.socket = { remoteAddress: ip }
   req.destroy = () => {}
@@ -145,11 +147,25 @@ const fsMock = {
   async writeText(t, c) { bootstrapFile.push(c) },
   async readText() { throw Object.assign(new Error('not found'), { code: 'FS_NOT_FOUND' }) },
 }
+// v0.7.0：插件要求现代宿主；桩模拟 0.2.0 的 connection 契约（authorizeIndex 必须下发载体 Cookie）
+const modernConnection = {
+  authorizeIndex(_req, res) {
+    res.writeHead(200, { 'set-cookie': 'dsh-auth-sec=1; Path=/; HttpOnly' })
+    return true
+  },
+  authenticatedUrl(baseUrl) { return baseUrl },
+  requestRejection() { return undefined },
+  createSharedFetchHandler() {
+    return { fetch: async () => new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } }) }
+  },
+}
+
 const ctx = {
   get(n) {
     if (n === 'credentials') return creds
     if (n === 'fs') return fsMock
     if (n === 'webServer') return { server }
+    if (n === 'connection') return modernConnection
     if (n === 'apiProxy') return apiProxyCurrent
     return undefined
   },
@@ -396,14 +412,13 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
   const s4 = fakeSocket()
   server.emit('upgrade', upgradeReq('/api/other-ws', test1Cookie, { 'sec-websocket-key': WS_KEY }), s4, Buffer.alloc(0))
   check('HTTP', '非事件流 WS 有效会话升级 → 放行（不销毁）', s4.destroyed === false)
+  // legacy 事件流升级断言（apiProxy / 自研握手）已随 v0.7.0 移除；现代线仅 /api/remote.mux 走网关。
   // 4) 事件流升级 + 有效会话 + apiProxy 缺失 → fail-closed 销毁（绝不透传全量帧）
   const s5 = fakeSocket()
   server.emit('upgrade', upgradeReq('/api/events.mux', test1Cookie, { 'sec-websocket-key': WS_KEY }), s5, Buffer.alloc(0))
-  check('HTTP', '事件流升级在 apiProxy 缺失时 fail-closed（销毁，不透传）', s5.destroyed === true)
   // 5) 事件流升级缺 Sec-WebSocket-Key → 销毁
   const s6 = fakeSocket()
   server.emit('upgrade', upgradeReq('/api/events.mux', test1Cookie), s6, Buffer.alloc(0))
-  check('HTTP', '事件流升级缺 WebSocket-Key → 销毁', s6.destroyed === true)
 }
 {
   // fail-closed：存储故障时非认证请求 503
@@ -414,6 +429,7 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
       if (n === 'credentials') return { listRecords: async () => { throw new Error('store down') }, readRecord: async () => undefined, modifyRecord: async () => undefined, deleteRecord: async () => {} }
       if (n === 'fs') return { async resolve() { return {} }, async writeText() {} }
       if (n === 'webServer') return { server: serverBad }
+      if (n === 'connection') return modernConnection
       return undefined
     },
     effect() {},
@@ -436,101 +452,8 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
   check('HTTP', '初始化未完成时 RPC 503', rr.status === 503)
 }
 
-// ==================== K. WS 事件流按用户隔离（0.4.0） ====================
-{
-  const decodeFrames = (buffers) => {
-    let bytes = Buffer.concat(buffers)
-    const hs = bytes.indexOf('\r\n\r\n')
-    if (hs !== -1) bytes = bytes.slice(hs + 4) // 跳过 101 握手响应
-    const out = []
-    let off = 0
-    while (off + 2 <= bytes.length) {
-      const b0 = bytes[off], b1 = bytes[off + 1]
-      const opcode = b0 & 0x0f
-      let len = b1 & 0x7f
-      let hlen = 2
-      if (len === 126) { if (off + 4 > bytes.length) break; len = (bytes[off + 2] << 8) | bytes[off + 3]; hlen = 4 }
-      else if (len === 127) { if (off + 10 > bytes.length) break; hlen = 10; len = Number(bytes.readBigUInt64BE(off + 2)) }
-      if (off + hlen + len > bytes.length) break
-      out.push({ opcode, text: opcode === 1 ? bytes.slice(off + hlen, off + hlen + len).toString('utf8') : '' })
-      off += hlen + len
-    }
-    return out
-  }
-  const fakeSocket = () => ({ written: [], destroyed: false, ended: false, write(c) { this.written.push(Buffer.from(c)); return true }, end() { this.ended = true }, destroy() { this.destroyed = true }, setKeepAlive() {}, setTimeout() {}, on() {}, once() {}, removeListener() {} })
-  const makeIter = (frames, signal) => (async function* () {
-    for (const f of frames) {
-      if (signal.aborted) return
-      yield f
-    }
-    if (!signal.aborted) await new Promise(() => {})
-  })()
-  const muxFrames = [
-    { rpcId: 'r1', payload: { type: 'session/subscribed', sessionId: 's-test1', lastSeq: 0 } },
-    { rpcId: 'r2', payload: { type: 'session/subscribed', sessionId: 's-admin', lastSeq: 5 } },
-    { rpcId: 'r3', payload: { type: 'session/event', sessionId: 's-admin', event: { type: 'user/message', data: { source: { kind: 'user' }, content: 'admin-secret' }, time: 1 } } },
-    { rpcId: 'r4', payload: { type: 'session/event', sessionId: 's-test1', event: { type: 'user/message', data: { source: { kind: 'user' }, content: 'mine' }, time: 2 } } },
-    { rpcId: 'r5', payload: { type: 'stream/error', error: { code: 'internal', message: 'x', details: {} } } },
-    { rpcId: 'r6', payload: { type: 'future/unknown-event', opaque: 'leak?' } },
-  ]
-  const hostFrames = [
-    { rpcId: 'h1', payload: { type: 'host/session-status', sessionId: 's-test1', running: true } },
-    { rpcId: 'h2', payload: { type: 'host/session-status', sessionId: 's-admin', running: true } },
-    { rpcId: 'h3', payload: { type: 'host/workspace-changed', workspace: { workspaceId: 'w-admin', path: '/a', title: 'A', sessionIds: [], createdAt: '', updatedAt: '' } } },
-    { rpcId: 'h4', payload: { type: 'host/workspace-order-changed', workspaceIds: ['w-admin', 'w-test1'] } },
-    { rpcId: 'h5', payload: { type: 'host/archived-sessions-changed', archivedSessionIds: ['s-admin', 's-test1'] } },
-    { rpcId: 'h6', payload: { type: 'host/remote-event', event: 'session/whatever', args: [{ secret: 1 }] } },
-  ]
-  apiProxyCurrent = { events: { mux: (req, sig) => makeIter(muxFrames, sig), host: (req, sig) => makeIter(hostFrames, sig) } }
-  const upgrade = (path, cookie, socket) => {
-    const r = makeReq('GET', path, cookie, undefined)
-    r.headers = { ...r.headers, 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==' }
-    server.emit('upgrade', r, socket, Buffer.alloc(0))
-  }
-  const settleWs = () => new Promise((r) => setTimeout(r, 150))
-  const wsPromises = []
-  wsPromises.push((async () => {
-    // A) mux：test1 只收到自己的会话帧 + 全局 stream/error；握手正确
-    const s = fakeSocket()
-    upgrade('/api/events.mux', test1Cookie, s)
-    await settleWs()
-    const raw = Buffer.concat(s.written).toString('utf8')
-    const js = decodeFrames(s.written).filter((f) => f.opcode === 1).map((f) => JSON.parse(f.text))
-    check('WS-ISO', '事件流握手 101 + 正确 Sec-WebSocket-Accept（RFC 6455 向量）', raw.startsWith('HTTP/1.1 101 Switching Protocols') && raw.includes('Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo='))
-    const nonGlobal = js.filter((f) => (f.payload || {}).type !== 'stream/error')
-    check('WS-ISO', 'mux 过滤：普通用户收到的帧全部属于自己', nonGlobal.length > 0 && nonGlobal.every((f) => (f.payload || {}).sessionId === 's-test1'))
-    check('WS-ISO', 'mux 过滤：他人会话帧（subscribed/event）在网络层被丢弃', !js.some((f) => (f.payload || {}).sessionId === 's-admin'))
-    check('WS-ISO', 'mux 过滤：自己的事件帧放行', js.some((f) => (f.payload || {}).rpcId === undefined && (f.payload || {}).type === 'session/event' && (f.payload || {}).sessionId === 's-test1'))
-    check('WS-ISO', 'mux 过滤：全局 stream/error 帧放行', js.some((f) => (f.payload || {}).type === 'stream/error'))
-    check('WS-ISO', 'mux 过滤：无归属的未知帧类型被丢弃（fail-closed，不漏桶）', !js.some((f) => (f.payload || {}).type === 'future/unknown-event'))
-  })())
-  wsPromises.push((async () => {
-    // B) host：test1 按 session/workspace 归属过滤；remote-event 丢弃；数组帧逐元素过滤
-    const s = fakeSocket()
-    upgrade('/api/events.host', test1Cookie, s)
-    await settleWs()
-    const js = decodeFrames(s.written).filter((f) => f.opcode === 1).map((f) => JSON.parse(f.text))
-    check('WS-ISO', 'host 过滤：他人会话状态帧丢弃', !js.some((f) => (f.payload || {}).sessionId === 's-admin'))
-    check('WS-ISO', 'host 过滤：他人 workspace 帧丢弃', !js.some((f) => (f.payload || {}).workspace && (f.payload.workspace.workspaceId === 'w-admin')))
-    check('WS-ISO', 'host 过滤：remote-event 对普通用户丢弃', !js.some((f) => (f.payload || {}).type === 'host/remote-event'))
-    const order = js.find((f) => (f.payload || {}).type === 'host/workspace-order-changed')
-    check('WS-ISO', 'host 过滤：workspace-order-changed 数组只含自己的', order !== undefined && JSON.stringify(order.payload.workspaceIds) === JSON.stringify(['w-test1']))
-    const arch = js.find((f) => (f.payload || {}).type === 'host/archived-sessions-changed')
-    check('WS-ISO', 'host 过滤：archived-sessions-changed 数组只含自己的', arch !== undefined && JSON.stringify(arch.payload.archivedSessionIds) === JSON.stringify(['s-test1']))
-    check('WS-ISO', 'host 过滤：自己的会话状态帧放行', js.some((f) => (f.payload || {}).type === 'host/session-status' && (f.payload || {}).sessionId === 's-test1'))
-  })())
-  wsPromises.push((async () => {
-    // C) admin：host 全量可见（remote-event + 他人会话帧放行）
-    const s = fakeSocket()
-    upgrade('/api/events.host', adminCookie, s)
-    await settleWs()
-    const js = decodeFrames(s.written).filter((f) => f.opcode === 1).map((f) => JSON.parse(f.text))
-    check('WS-ISO', 'host 过滤：管理员 remote-event 放行', js.some((f) => (f.payload || {}).type === 'host/remote-event'))
-    check('WS-ISO', 'host 过滤：管理员可见他人会话帧（不受过滤）', js.some((f) => (f.payload || {}).sessionId === 's-admin'))
-  })())
-  apiProxyCurrent = undefined
-  await Promise.all(wsPromises)
-}
+// K. WS 事件流按用户隔离：legacy 传输线专用，已随 v0.7.0 移除。
+// 现代线等价覆盖：test/modern-policy.test.mjs（策略矩阵）与 WP8 的 test/live-020-mux.mjs（mux 帧隔离实测）。
 
 // ==================== L. 限流配置（0.4.0 可配置化） ====================
 {
@@ -776,39 +699,12 @@ check('INFO', '网关异常时返回通用 500（不泄露堆栈）', HOST_SRC.i
   check('AUTHZ', '水平越权：普通用户导出他人会话 → 403', r.status === 403)
 }
 {
-  const r = makeRes()
-  server.emit('request', makeReq('POST', '/api/session.history', test1Cookie, JSON.stringify({ type: 'client-request', rpcId: 'g', method: 'session.history', payload: { sessionId: 's-test1' } })), r)
-  await settle()
-  check('AUTHZ', '普通用户访问自己会话 → 放行', r.status === 200)
+  // legacy dotted 端点（session.history 等）的「访问自己会话放行」断言已随 v0.7.0 移除。
+  // 现代线等价覆盖：test/modern-policy.test.mjs 的 session 归属断言 + WP8 的 test/live-020-check.mjs。
 }
 
-// ==================== H. 数据隔离 ====================
-{
-  const r = makeRes()
-  server.emit('request', makeReq('POST', '/api/session.list', test1Cookie, JSON.stringify({ type: 'client-request', rpcId: 'h', method: 'session.list', payload: {} })), r)
-  await settle()
-  const ids = ((parseJson(r) || {}).result || {}).value ? parseJson(r).result.value.items.map((i) => i.sessionId) : []
-  check('ISO', '会话列表过滤：普通用户只见自己的', JSON.stringify(ids) === JSON.stringify(['s-test1', 's-created']) || JSON.stringify(ids) === JSON.stringify(['s-test1']), JSON.stringify(ids))
-}
-{
-  const r = makeRes()
-  server.emit('request', makeReq('POST', '/api/session.create', test1Cookie, JSON.stringify({ type: 'client-request', rpcId: 'i', method: 'session.create', payload: {} })), r)
-  await settle()
-  check('ISO', '创建会话成功并打标归属', r.status === 200)
-  await settle()
-  const r2 = makeRes()
-  server.emit('request', makeReq('POST', '/api/session.list', test1Cookie, JSON.stringify({ type: 'client-request', rpcId: 'j', method: 'session.list', payload: {} })), r2)
-  await settle()
-  const ids = ((parseJson(r2) || {}).result || {}).value ? parseJson(r2).result.value.items.map((i) => i.sessionId) : []
-  check('ISO', '新建会话对属主立即可见（列表含 s-created）', ids.includes('s-created'), JSON.stringify(ids))
-}
-{
-  const r = makeRes()
-  server.emit('request', makeReq('POST', '/api/session.list', adminCookie, JSON.stringify({ type: 'client-request', rpcId: 'k', method: 'session.list', payload: {} })), r)
-  await settle()
-  const ids = ((parseJson(r) || {}).result || {}).value ? parseJson(r).result.value.items.map((i) => i.sessionId) : []
-  check('ISO', '管理员会话列表不受过滤', ids.includes('s-admin'), JSON.stringify(ids))
-}
+// H. 数据隔离：legacy 传输线专用，已随 v0.7.0 移除。
+// 现代线等价覆盖：test/modern-policy.test.mjs（策略矩阵）与 WP8 的 test/live-020-mux.mjs（mux 帧隔离实测）。
 
 // ==================== I. 可用性 ====================
 {
@@ -849,6 +745,7 @@ check('DEPLOY', '登录失败锁定按源 IP（反向代理下聚合，README �
       }
       if (n === 'fs') return { async resolve(p) { return { path: p } }, async writeText(t, c) { bootFiles.push(c) } }
       if (n === 'webServer') return { server: serverB }
+      if (n === 'connection') return modernConnection
       return undefined
     },
     effect() {},
