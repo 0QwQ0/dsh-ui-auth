@@ -1042,7 +1042,7 @@
 
 			// —— 单组功能按钮 ——
 			var toolbar: any[] = []
-			// 口令输入框独占一排（紧凑高度），解锁按钮放到下一排
+			// 口令输入框独占一排（紧凑高度）；「解锁」按钮并入下方工具栏，与「查余额」等同排
 			if (state.loaded && !state.unlocked) {
 				children.push(React.createElement('div', { key: 'pw-row', className: 'fields' },
 					React.createElement('div', { className: 'field compact' },
@@ -1052,11 +1052,11 @@
 							'aria-label': '当前登录口令',
 							onChange: function (e: any) { setPassword(e.target.value) },
 						}))))
-				children.push(React.createElement('div', { key: 'pw-actions', className: 'actions' },
-					React.createElement('button', {
-						disabled: password === '',
-						onClick: function () { act('profileUnlock', { password: password }); setPassword('') },
-					}, '解锁')))
+				toolbar.push(React.createElement('button', {
+					key: 'unlock',
+					disabled: password === '',
+					onClick: function () { act('profileUnlock', { password: password }); setPassword('') },
+				}, '解锁'))
 			}
 			toolbar.push(React.createElement('button', {
 				key: 'balance', disabled: state.profiles.length === 0 || state.busy === 'balance',
