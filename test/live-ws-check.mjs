@@ -11,6 +11,14 @@ import http from 'node:http'
 import net from 'node:net'
 import crypto from 'node:crypto'
 
+// 会话 Cookie 名由插件按 DSH_HOME 派生（同一实例内稳定、实例间不同）；测试用同一公式。
+const COOKIE_NAME = 'dsh_auth_' + (() => {
+  const seed = process.env.DSH_HOME ?? process.cwd()
+  let hash = 0
+  for (let i = 0; i < seed.length; i += 1) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0
+  return hash.toString(36)
+})()
+
 const HOST = '127.0.0.1'
 const PORT = 3080
 
@@ -20,7 +28,7 @@ const reqJson = (path, method, body, cookie) => new Promise((resolve, reject) =>
     host: HOST, port: PORT, path, method,
     headers: {
       ...(data !== undefined ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) } : {}),
-      ...(cookie !== undefined ? { cookie: 'dsh_auth=' + cookie } : {}),
+      ...(cookie !== undefined ? { cookie: COOKIE_NAME + '=' + cookie } : {}),
     },
   }, (res) => {
     let b = ''
@@ -85,7 +93,7 @@ const main = async () => {
   // 1) 登录
   const login = await reqJson('/auth/login', 'POST', { username: 'test1', password: '12345678' })
   const sc = login.headers !== undefined ? login.headers['set-cookie'] || '' : ''
-  const m = /dsh_auth=([^;]+)/.exec(sc)
+  const m = new RegExp(COOKIE_NAME + '=([^;]+)').exec(sc)
   check('登录 test1 成功', login.status === 200 && m !== null)
   if (m === null) { process.exit(1) }
   const cookie = m[1]

@@ -16,6 +16,14 @@
  */
 import puppeteer from 'puppeteer'
 
+// 会话 Cookie 名由插件按 DSH_HOME 派生（同一实例内稳定、实例间不同）；测试用同一公式。
+const COOKIE_NAME = 'dsh_auth_' + (() => {
+  const seed = process.env.DSH_HOME ?? process.cwd()
+  let hash = 0
+  for (let i = 0; i < seed.length; i += 1) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0
+  return hash.toString(36)
+})()
+
 const base = process.env.DSH_PAGES_URL ?? process.env.DSH_PRESET_URL ?? 'http://localhost:3201'
 const adminUser = process.env.DSH_PAGES_ADMIN ?? 'admin'
 const adminPassword = process.env.DSH_PAGES_ADMIN_PASSWORD ?? process.env.DSH_PRESET_ADMIN_PASSWORD ?? ''
@@ -64,7 +72,7 @@ if (adminPassword === '') {
 }
 
 const admin = await login(adminUser, adminPassword)
-check('管理员登录成功', admin.status === 200 && admin.cookie.startsWith('dsh_auth='), `${admin.status}`)
+check('管理员登录成功', admin.status === 200 && admin.cookie.startsWith(COOKIE_NAME + '='), `${admin.status}`)
 
 // 普通用户：被删除的用户名会进永久墓碑，因此按候选名尝试
 const roster = await rpc(admin.cookie, 'listUsers')
@@ -78,7 +86,7 @@ for (const candidate of ['uiuser', 'uiuser2', 'uiuser3', 'uiuser4']) {
 check('准备普通用户账号', userName !== '', userName || '未能创建')
 
 const user = await login(userName, userPassword)
-check('普通用户登录成功', user.status === 200 && user.cookie.startsWith('dsh_auth='), `${user.status}`)
+check('普通用户登录成功', user.status === 200 && user.cookie.startsWith(COOKIE_NAME + '='), `${user.status}`)
 
 // ---- 普通用户的 agentPresets/* 权限面 ----
 const list = await remote(user.cookie, 'agentPresets/list', {})

@@ -8,6 +8,14 @@ import { EventEmitter } from 'node:events'
 import { readFileSync } from 'node:fs'
 import { apply, readLockConfig, clientIp, totpCodeAt } from '../lib/index.js'
 
+// 会话 Cookie 名由插件按 DSH_HOME 派生（同一实例内稳定、实例间不同）；测试用同一公式。
+const COOKIE_NAME = 'dsh_auth_' + (() => {
+  const seed = process.env.DSH_HOME ?? process.cwd()
+  let hash = 0
+  for (let i = 0; i < seed.length; i += 1) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0
+  return hash.toString(36)
+})()
+
 const HOST_SRC = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
 const CLIENT_SRC = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
 
@@ -24,7 +32,7 @@ function makeReq(method, url, cookie, body, ip = '127.0.0.1') {
   req.headers = {}
   // 真实宿主总会带上 Host（现代网关 prepare() 依赖它铸造原生载体 Cookie）
   req.headers.host = 'localhost:3080'
-  if (cookie !== undefined) req.headers.cookie = 'dsh_auth=' + cookie
+  if (cookie !== undefined) req.headers.cookie = COOKIE_NAME + '=' + cookie
   req.socket = { remoteAddress: ip }
   req.destroy = () => {}
   const chunks = body !== undefined ? [Buffer.from(body)] : []
@@ -58,7 +66,7 @@ const settle = () => new Promise((r) => setImmediate(r))
 function cookieOf(res) {
   const sc = res.headers['set-cookie']
   if (!sc) return undefined
-  const m = /dsh_auth=([^;]+)/.exec(sc)
+  const m = new RegExp(COOKIE_NAME + '=([^;]+)').exec(sc)
   return m ? m[1] : undefined
 }
 
@@ -478,17 +486,17 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
   secReq.socket = { remoteAddress: '10.5.0.1', encrypted: true }
   server.emit('request', secReq, secLogin)
   await settle()
-  check('CFG', 'TLS 直连登录 Cookie 含 Secure', /dsh_auth=/.test(secLogin.headers['set-cookie'] || '') && (secLogin.headers['set-cookie'] || '').includes('Secure'))
+  check('CFG', 'TLS 直连登录 Cookie 含 Secure', new RegExp(COOKIE_NAME + '=').test(secLogin.headers['set-cookie'] || '') && (secLogin.headers['set-cookie'] || '').includes('Secure'))
   const plainLogin = makeRes()
   server.emit('request', makeReq('POST', '/auth/login', undefined, JSON.stringify({ username: 'admin', password: 'new-admin-pw-9999' }), '10.5.0.2'), plainLogin)
   await settle()
-  check('CFG', 'HTTP 登录 Cookie 不含 Secure（内网调试兼容）', /dsh_auth=/.test(plainLogin.headers['set-cookie'] || '') && !(plainLogin.headers['set-cookie'] || '').includes('Secure'))
+  check('CFG', 'HTTP 登录 Cookie 不含 Secure（内网调试兼容）', new RegExp(COOKIE_NAME + '=').test(plainLogin.headers['set-cookie'] || '') && !(plainLogin.headers['set-cookie'] || '').includes('Secure'))
   const xfpReq = makeReq('POST', '/auth/login', undefined, JSON.stringify({ username: 'admin', password: 'new-admin-pw-9999' }), '10.5.0.3')
   xfpReq.headers = { ...xfpReq.headers, 'x-forwarded-proto': 'https' }
   const xfpLogin = makeRes()
   server.emit('request', xfpReq, xfpLogin)
   await settle()
-  check('CFG', '未信任反代时 X-Forwarded-Proto 不启用 Secure', /dsh_auth=/.test(xfpLogin.headers['set-cookie'] || '') && !(xfpLogin.headers['set-cookie'] || '').includes('Secure'))
+  check('CFG', '未信任反代时 X-Forwarded-Proto 不启用 Secure', new RegExp(COOKIE_NAME + '=').test(xfpLogin.headers['set-cookie'] || '') && !(xfpLogin.headers['set-cookie'] || '').includes('Secure'))
 }
 
 // ==================== M. 注册 + 邀请码（0.5.0） ====================
@@ -522,9 +530,9 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
   const code = (parseJson(inv) || {}).codes !== undefined ? parseJson(inv).codes[0] : undefined
   check('REG', '管理员生成邀请码（8 位去混淆字符集）', inv.status === 200 && typeof code === 'string' && /^[A-Z2-9]{8}$/.test(code))
   const okReg = await postReg({ username: 'regs3', password: 'regs3-pw-1234', email: 'regs3@example.com', invite: code })
-  check('REG', '有效邀请码注册成功（自动登录 + 引导页 redirect）', okReg.status === 200 && parseJson(okReg).ok === true && /dsh_auth=/.test(okReg.headers['set-cookie'] || '') && parseJson(okReg).redirect === '/auth/register/success')
+  check('REG', '有效邀请码注册成功（自动登录 + 引导页 redirect）', okReg.status === 200 && parseJson(okReg).ok === true && new RegExp(COOKIE_NAME + '=').test(okReg.headers['set-cookie'] || '') && parseJson(okReg).redirect === '/auth/register/success')
   // 引导页：带注册会话可访问，未登录重定向
-  const regs3Cookie = /dsh_auth=([^;]+)/.exec(okReg.headers['set-cookie'] || '')[1]
+  const regs3Cookie = new RegExp(COOKIE_NAME + '=([^;]+)').exec(okReg.headers['set-cookie'] || '')[1]
   const succPage = makeRes()
   server.emit('request', makeReq('GET', '/auth/register/success', regs3Cookie, undefined), succPage)
   await settle()
@@ -550,14 +558,14 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
   const regLogin = makeRes()
   server.emit('request', makeReq('POST', '/auth/login', undefined, JSON.stringify({ username: 'regs3', password: 'regs3-pw-1234' }), '10.1.0.2'), regLogin)
   await settle()
-  check('REG', '新注册用户可登录（role=user，邮箱保留）', regLogin.status === 200 && /dsh_auth=/.test(regLogin.headers['set-cookie'] || ''))
+  check('REG', '新注册用户可登录（role=user，邮箱保留）', regLogin.status === 200 && new RegExp(COOKIE_NAME + '=').test(regLogin.headers['set-cookie'] || ''))
   const page2 = makeRes()
   server.emit('request', makeReq('POST', '/auth/register', undefined, '{oops not json'), page2)
   await settle()
   check('REG', '注册接口畸形 JSON → 400', page2.status === 400)
   // 引导页 no-store
   const succPage2 = makeRes()
-  const regs3c = /dsh_auth=([^;]+)/.exec(regLogin.headers['set-cookie'] || '') !== null ? /dsh_auth=([^;]+)/.exec(regLogin.headers['set-cookie'] || '')[1] : ''
+  const regs3c = new RegExp(COOKIE_NAME + '=([^;]+)').exec(regLogin.headers['set-cookie'] || '') !== null ? new RegExp(COOKIE_NAME + '=([^;]+)').exec(regLogin.headers['set-cookie'] || '')[1] : ''
   server.emit('request', makeReq('GET', '/auth/register/success', regs3c, undefined), succPage2)
   await settle()
   check('REG', '引导页 no-store', (succPage2.headers['cache-control'] || '').includes('no-store'))
@@ -593,12 +601,12 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
   const loginPlain1 = makeRes()
   server.emit('request', makeReq('POST', '/auth/login', undefined, JSON.stringify({ username: 'test1', password: '12345678' }), '10.3.0.1'), loginPlain1)
   await settle()
-  check('TOTP', '绑定后默认 2FA 关闭：密码直接登录成功', loginPlain1.status === 200 && parseJson(loginPlain1).totpRequired !== true && /dsh_auth=/.test(loginPlain1.headers['set-cookie'] || ''))
+  check('TOTP', '绑定后默认 2FA 关闭：密码直接登录成功', loginPlain1.status === 200 && parseJson(loginPlain1).totpRequired !== true && new RegExp(COOKIE_NAME + '=').test(loginPlain1.headers['set-cookie'] || ''))
   // 0.6.4：免密 TOTP 登录已移除 —— 只给动态码不给密码一律 400
   const loginFree1 = makeRes()
   server.emit('request', makeReq('POST', '/auth/login', undefined, JSON.stringify({ username: 'test1', totp: goodCode }), '10.3.0.2'), loginFree1)
   await settle()
-  check('TOTP', '0.6.4 起免密 TOTP 登录已移除（缺密码 → 400）', loginFree1.status === 400 && !/dsh_auth=/.test(loginFree1.headers['set-cookie'] || ''))
+  check('TOTP', '0.6.4 起免密 TOTP 登录已移除（缺密码 → 400）', loginFree1.status === 400 && !new RegExp(COOKIE_NAME + '=').test(loginFree1.headers['set-cookie'] || ''))
   // 开启两步验证开关
   const on2fa = await rpcCall('totpSet2fa', { enabled: true }, test1Cookie)
   check('TOTP', '开启两步验证开关', on2fa.status === 200)
@@ -611,7 +619,7 @@ check('CSRF', 'SameSite=Strict 已启用（见 SESSION 组）', true)
   const login2fa = makeRes()
   server.emit('request', makeReq('POST', '/auth/login', undefined, JSON.stringify({ username: 'test1', password: '12345678', totp: goodCode }), '10.3.0.4'), login2fa)
   await settle()
-  check('TOTP', '2FA 开启：密码 + 动态码两步登录成功', login2fa.status === 200 && /dsh_auth=/.test(login2fa.headers['set-cookie'] || ''))
+  check('TOTP', '2FA 开启：密码 + 动态码两步登录成功', login2fa.status === 200 && new RegExp(COOKIE_NAME + '=').test(login2fa.headers['set-cookie'] || ''))
   // 2FA 开启：密码 + 错误动态码 → 403
   const loginBadTotp = makeRes()
   server.emit('request', makeReq('POST', '/auth/login', undefined, JSON.stringify({ username: 'test1', password: '12345678', totp: '000000' }), '10.3.0.5'), loginBadTotp)

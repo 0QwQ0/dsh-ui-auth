@@ -1,3 +1,11 @@
+// 会话 Cookie 名由插件按 DSH_HOME 派生（同一实例内稳定、实例间不同）；测试用同一公式。
+const COOKIE_NAME = 'dsh_auth_' + (() => {
+  const seed = process.env.DSH_HOME ?? process.cwd()
+  let hash = 0
+  for (let i = 0; i < seed.length; i += 1) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0
+  return hash.toString(36)
+})()
+
 /**
  * live-020-check.mjs — 隔离 DSH 0.2.0-rc.2 实例上的适配验收。
  *
@@ -71,13 +79,13 @@ check('GET / → 302 登录门', root302.status === 302 && (root302.headers.get(
   `${root302.status} ${root302.headers.get('location')}`)
 const loginPage = await raw('/auth/login')
 check('GET /auth/login → 200 登录页', loginPage.status === 200)
-const apiNoCookie = await remote('dsh_auth=none', 'session/list', { _request: {} })
+const apiNoCookie = await remote(COOKIE_NAME + '=none', 'session/list', { _request: {} })
 check('未认证 /api/session/list → 401', apiNoCookie.status === 401, String(apiNoCookie.status))
 
 // ---- 2. admin login + native carrier bridging ----
 check('读取一次性 bootstrap 口令', typeof adminPassword === 'string' && adminPassword.length >= 12)
 const admin = await login('admin', adminPassword)
-check('admin 登录 → 200 + dsh_auth cookie', admin.status === 200 && admin.cookie.startsWith('dsh_auth='), `${admin.status} ${admin.cookie.split('=')[0]}`)
+check('admin 登录 → 200 + dsh_auth cookie', admin.status === 200 && admin.cookie.startsWith(COOKIE_NAME + '='), `${admin.status} ${admin.cookie.split('=')[0]}`)
 
 const indexWithCookie = await raw('/', { headers: { cookie: admin.cookie } })
 const indexText = await indexWithCookie.text()
@@ -100,7 +108,7 @@ const created = await raw('/auth/rpc/createUser', {
 })
 check('管理员创建普通用户', created.status === 200, `${created.status} ${(await created.text()).slice(0, 80)}`)
 const user = await login(username, 'Probe-Pass-42!')
-check('普通用户可登录', user.status === 200 && user.cookie.startsWith('dsh_auth='), `${user.status}`)
+check('普通用户可登录', user.status === 200 && user.cookie.startsWith(COOKIE_NAME + '='), `${user.status}`)
 
 // admin provisions a workspace and a session inside it; the ordinary user must not see either.
 const workspacePath = (process.env.DSH015_WORKSPACE ?? process.cwd()).replaceAll('\\', '/')

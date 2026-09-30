@@ -7,6 +7,14 @@
 import { readFileSync } from 'node:fs'
 import WebSocket from 'ws'
 
+// 会话 Cookie 名由插件按 DSH_HOME 派生（同一实例内稳定、实例间不同）；测试用同一公式。
+const COOKIE_NAME = 'dsh_auth_' + (() => {
+  const seed = process.env.DSH_HOME ?? process.cwd()
+  let hash = 0
+  for (let i = 0; i < seed.length; i += 1) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0
+  return hash.toString(36)
+})()
+
 const base = process.env.DSH015_URL ?? 'http://127.0.0.1:3201'
 const bootstrap = readFileSync(process.env.DSH015_BOOTSTRAP, 'utf8')
 const adminPassword = (/密码:\s*(\S+)/.exec(bootstrap) ?? /password:\s*(\S+)/i.exec(bootstrap))[1]
@@ -55,12 +63,12 @@ const waitFor = async (frames, predicate, timeoutMs = 4000) => {
 }
 
 const adminCookie = await login('admin', adminPassword)
-check('admin 登录（mux 前置）', adminCookie.startsWith('dsh_auth='))
+check('admin 登录（mux 前置）', adminCookie.startsWith(COOKIE_NAME + '='))
 
 // ---- 1. unauthenticated upgrade is refused before the mux is reached ----
 // The plugin destroys the socket for an unauthenticated upgrade (fail-closed): the
 // client observes a hang-up rather than an HTTP status, which is the expected shape.
-const anon = await openStream('dsh_auth=none', { expectUpgrade: false })
+const anon = await openStream(COOKIE_NAME + '=none', { expectUpgrade: false })
 check('未认证 mux 升级被拒绝（未建立 101）', anon.status !== 101, String(anon.status ?? anon.error))
 
 // ---- 2. admin $events stream: ready frame ----
@@ -83,7 +91,7 @@ await fetch(`${base}/auth/rpc/createUser`, {
   body: JSON.stringify({ username, password: 'Probe-Pass-42!', role: 'user' }),
 })
 const userCookie = await login(username, 'Probe-Pass-42!')
-check('普通用户登录（mux 前置）', userCookie.startsWith('dsh_auth='))
+check('普通用户登录（mux 前置）', userCookie.startsWith(COOKIE_NAME + '='))
 
 const userEvents = await openStream(userCookie)
 userEvents.ws.send(JSON.stringify({ type: 'open', streamId: 'u1', endpoint: '$events', payload: { args: {} } }))

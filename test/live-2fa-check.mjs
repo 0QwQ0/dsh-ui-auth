@@ -10,6 +10,14 @@
 // ============================================================================
 import http from 'node:http'
 
+// 会话 Cookie 名由插件按 DSH_HOME 派生（同一实例内稳定、实例间不同）；测试用同一公式。
+const COOKIE_NAME = 'dsh_auth_' + (() => {
+  const seed = process.env.DSH_HOME ?? process.cwd()
+  let hash = 0
+  for (let i = 0; i < seed.length; i += 1) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0
+  return hash.toString(36)
+})()
+
 const post = (p, body, xff) => new Promise((done) => {
   const d = JSON.stringify(body)
   const r = http.request({

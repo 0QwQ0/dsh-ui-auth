@@ -5,6 +5,14 @@
 import { EventEmitter } from 'node:events'
 import { name, inject, apply, totpCodeAt } from '../lib/index.js'
 
+// 会话 Cookie 名由插件按 DSH_HOME 派生（同一实例内稳定、实例间不同）；测试用同一公式。
+const COOKIE_NAME = 'dsh_auth_' + (() => {
+  const seed = process.env.DSH_HOME ?? process.cwd()
+  let hash = 0
+  for (let i = 0; i < seed.length; i += 1) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0
+  return hash.toString(36)
+})()
+
 let failures = 0
 function check(label, cond, extra) {
   if (cond) { console.log('PASS ' + label) } else { failures++; console.error('FAIL ' + label + (extra !== undefined ? ' :: ' + extra : '')) }
@@ -85,7 +93,7 @@ function makeReq(method, url, cookie, body) {
   req.headers = {}
   // 真实宿主总会带上 Host；现代网关的 prepare() 依赖它铸造原生载体 Cookie
   req.headers.host = 'localhost:3080'
-  if (cookie !== undefined) req.headers.cookie = 'dsh_auth=' + cookie
+  if (cookie !== undefined) req.headers.cookie = COOKIE_NAME + '=' + cookie
   req.socket = { remoteAddress: '127.0.0.1' }
   req._destroyed = false
   req.destroy = () => { req._destroyed = true }
@@ -121,7 +129,7 @@ function parseJson(res) { try { return JSON.parse(res.body) } catch (e) { return
 function cookieOf(res) {
   const sc = res.headers['set-cookie']
   if (!sc) return undefined
-  const m = /dsh_auth=([^;]+)/.exec(sc)
+  const m = new RegExp(COOKIE_NAME + '=([^;]+)').exec(sc)
   return m ? m[1] : undefined
 }
 const settle = () => new Promise((r) => setImmediate(r))
@@ -642,10 +650,10 @@ if (disposers.length > 0) {
   check('2fa: 绑定后默认不开启两步验证', parseJson(st0).totp.twoFactor === false)
   // 1) 绑定 TOTP 但 2FA 关闭：密码直接登录（无需动态码）
   const s0 = await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234' })
-  check('2fa: 2FA 关闭时密码直接登录成功', s0.status === 200 && parseJson(s0).totpRequired !== true && /dsh_auth=/.test(s0.headers['set-cookie'] || ''))
+  check('2fa: 2FA 关闭时密码直接登录成功', s0.status === 200 && parseJson(s0).totpRequired !== true && new RegExp(COOKIE_NAME + '=').test(s0.headers['set-cookie'] || ''))
   // 2) 0.6.4：免密 TOTP 登录路径已移除，只给动态码 → 400
   const s1 = await call('POST', '/auth/login', { username: 'reg1', totp: good })
-  check('2fa: 免密 TOTP 已移除（缺密码 → 400）', s1.status === 400 && !/dsh_auth=/.test(s1.headers['set-cookie'] || ''))
+  check('2fa: 免密 TOTP 已移除（缺密码 → 400）', s1.status === 400 && !new RegExp(COOKIE_NAME + '=').test(s1.headers['set-cookie'] || ''))
   // 3) 开启两步验证开关
   const on = await call('POST', '/auth/rpc/totpSet2fa', { enabled: true }, reg1c)
   const st1 = await call('POST', '/auth/rpc/totpStatus', {}, reg1c)
@@ -655,7 +663,7 @@ if (disposers.length > 0) {
   check('2fa: 开启后密码登录要求动态码（不签发会话）', s2.status === 200 && parseJson(s2).totpRequired === true && !(s2.headers['set-cookie'] || '').includes('dsh_auth='))
   // 5) 2FA 开启：密码 + TOTP → 登录成功
   const s3 = await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234', totp: good })
-  check('2fa: 开启后密码 + 动态码两步登录成功', s3.status === 200 && /dsh_auth=/.test(s3.headers['set-cookie'] || ''))
+  check('2fa: 开启后密码 + 动态码两步登录成功', s3.status === 200 && new RegExp(COOKIE_NAME + '=').test(s3.headers['set-cookie'] || ''))
   // 6) 2FA 开启：只给动态码 → 400（免密路径不存在）
   const s4 = await call('POST', '/auth/login', { username: 'reg1', totp: good })
   check('2fa: 开启后只给动态码 → 400', s4.status === 400)
@@ -668,7 +676,7 @@ if (disposers.length > 0) {
   // 9) 关闭两步验证 → 密码直接登录恢复
   await call('POST', '/auth/rpc/totpSet2fa', { enabled: false }, reg1c)
   const s7 = await call('POST', '/auth/login', { username: 'reg1', password: 'reg1-pw-1234' })
-  check('2fa: 关闭后密码直接登录恢复', s7.status === 200 && parseJson(s7).totpRequired !== true && /dsh_auth=/.test(s7.headers['set-cookie'] || ''))
+  check('2fa: 关闭后密码直接登录恢复', s7.status === 200 && parseJson(s7).totpRequired !== true && new RegExp(COOKIE_NAME + '=').test(s7.headers['set-cookie'] || ''))
   // 10) 清理：移除 reg1 的 TOTP
   await call('POST', '/auth/rpc/totpRemove', { code: good }, reg1c)
 }

@@ -9,6 +9,14 @@ import { EventEmitter } from 'node:events'
 import vm from 'node:vm'
 import { apply } from '../lib/index.js'
 
+// 会话 Cookie 名由插件按 DSH_HOME 派生（同一实例内稳定、实例间不同）；测试用同一公式。
+const COOKIE_NAME = 'dsh_auth_' + (() => {
+  const seed = process.env.DSH_HOME ?? process.cwd()
+  let hash = 0
+  for (let i = 0; i < seed.length; i += 1) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0
+  return hash.toString(36)
+})()
+
 let failures = 0
 function check(label, cond, extra) {
   if (cond) { console.log('PASS ' + label) } else { failures++; console.error('FAIL ' + label + (extra !== undefined ? ' :: ' + extra : '')) }
@@ -68,7 +76,7 @@ function makeReq(method, url, body, host, cookie) {
   req.method = method
   req.url = url
   req.headers = { host: host ?? 'localhost:3080' }
-  if (cookie !== undefined && cookie !== '') req.headers.cookie = 'dsh_auth=' + cookie
+  if (cookie !== undefined && cookie !== '') req.headers.cookie = COOKIE_NAME + '=' + cookie
   req.socket = { remoteAddress: '127.0.0.1' }
   req.destroy = () => {}
   const chunks = body !== undefined ? [Buffer.from(body)] : []
@@ -171,7 +179,7 @@ const adminPassword = (/密码:\s+(\S+)/.exec(bootstrap) ?? [])[1]
 check('引导页用例：已取得一次性管理员口令', typeof adminPassword === 'string' && adminPassword !== '')
 
 const login = await call('POST', '/auth/login', JSON.stringify({ username: 'admin', password: adminPassword }), 'localhost:3080')
-const cookieMatch = /dsh_auth=([^;]+)/.exec(login.headers['set-cookie'] ?? '')
+const cookieMatch = new RegExp(COOKIE_NAME + '=([^;]+)').exec(login.headers['set-cookie'] ?? '')
 const adminCookie = cookieMatch === null ? '' : cookieMatch[1]
 check('管理员登录成功（用于访问引导页）', login.status === 200 && adminCookie !== '', `status=${login.status}`)
 
