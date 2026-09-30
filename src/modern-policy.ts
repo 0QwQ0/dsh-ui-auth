@@ -92,7 +92,51 @@ export interface ModernPolicy {
   frame(principal: Principal, endpoint: string, value: unknown, correlation: StreamCorrelation): unknown
 }
 
-export function createModernPolicy(owners: OwnershipLookup): ModernPolicy {
+/** 普通用户可用的模型范围（R2：按登录用户裁剪 provider 列表与模型目录）。 */
+export interface ModelEntitlement {
+  /** 允许的 provider 路由 id（如 `deepseek`）。 */
+  readonly providers: readonly string[]
+  /** 允许的 provider + model 组合；provider 已在上表列出的，仍需逐模型登记。 */
+  readonly models: readonly { readonly provider: string; readonly model: string }[]
+}
+
+export interface ModernPolicyOptions {
+  /**
+   * 按登录用户返回模型授权范围。返回 `undefined` 表示不裁剪（保持只读放行）；
+   * 管理员从不受此限制。未提供该回调时行为与以前完全一致。
+   */
+  readonly entitlement?: (principal: Principal) => Promise<ModelEntitlement | undefined> | ModelEntitlement | undefined
+}
+
+/** provider 行/模型行的字段名在不同包里有 `id`/`provider`/`model` 等写法，这里做容错读取。 */
+const rowId = (row: unknown): string | undefined => {
+  if (!object(row)) return undefined
+  for (const key of ['id', 'provider', 'providerId', 'name']) {
+    const value = row[key]
+    if (nonempty(value)) return value
+  }
+  return undefined
+}
+const rowModel = (row: unknown): string | undefined => {
+  if (!object(row)) return undefined
+  for (const key of ['id', 'model', 'modelId', 'name']) {
+    const value = row[key]
+    if (nonempty(value)) return value
+  }
+  return undefined
+}
+
+export function createModernPolicy(owners: OwnershipLookup, options: ModernPolicyOptions = {}): ModernPolicy {
+  /** 取当前主体的授权范围（管理员永远不受限）。 */
+  const entitlementOf = async (principal: Principal): Promise<ModelEntitlement | undefined> => {
+    if (principal.role === 'admin' || options.entitlement === undefined) return undefined
+    return await options.entitlement(principal)
+  }
+  const allowedProvider = (scope: ModelEntitlement, provider: unknown): boolean =>
+    nonempty(provider) && scope.providers.includes(provider)
+  const allowedModel = (scope: ModelEntitlement, provider: unknown, model: unknown): boolean =>
+    nonempty(provider) && nonempty(model)
+    && scope.models.some(entry => entry.provider === provider && entry.model === model)
   const arrayOf = (value: unknown): unknown[] => (Array.isArray(value) ? value : [])
   const session = (principal: Principal, id: unknown): boolean =>
     nonempty(id) && (principal.role === 'admin' || owners.session(id) === principal.username)
@@ -202,7 +246,18 @@ export function createModernPolicy(owners: OwnershipLookup): ModernPolicy {
           if (!nonempty(request.sessionId)) return false
           return session(principal, request.sessionId) || !(await owners.sessionExists(request.sessionId))
         }
-        if (SESSION_BY_ID.has(method as string)) return session(principal, request.sessionId)
+        if (SESSION_BY_ID.has(method as string)) {
+          if (method === 'selectModel') {
+            // R2：切换模型必须落在该用户被授权的 provider/model 之内（未配置授权时维持原行为）。
+            const scope = await entitlementOf(principal)
+            if (scope !== undefined) {
+              const provider = request.provider ?? args.provider
+              const model = request.model ?? args.model
+              if (!allowedProvider(scope, provider) || !allowedModel(scope, provider, model)) return false
+            }
+          }
+          return session(principal, request.sessionId)
+        }
         return false
       }
       if (namespace === 'workspace') {
@@ -234,6 +289,24 @@ export function createModernPolicy(owners: OwnershipLookup): ModernPolicy {
         await owners.claimSession(record.sessionId, principal.username)
       }
       if (principal.role === 'admin') return value
+      // R2：按登录用户裁剪模型目录与 provider 列表（字段名容错；形状不认识时原样返回）。
+      const modelScope = await entitlementOf(principal)
+      if (modelScope !== undefined) {
+        if (endpoint === 'session/modelCatalog' && record !== undefined && Array.isArray(record.providers)) {
+          const groups = (record.providers as unknown[]).flatMap(group => {
+            const provider = rowId(group)
+            if (!allowedProvider(modelScope, provider)) return []
+            const models = object(group) && Array.isArray(group.models) ? group.models : undefined
+            if (models === undefined) return [group]
+            const kept = models.filter(model => allowedModel(modelScope, provider, rowModel(model)))
+            return kept.length === 0 ? [] : [{ ...(group as JsonObject), models: kept }]
+          })
+          return { ...record, providers: groups }
+        }
+        if ((endpoint === 'llm/listProviders' || endpoint === 'llm/listConfigurableProviders') && Array.isArray(value)) {
+          return (value as unknown[]).filter(row => allowedProvider(modelScope, rowId(row)))
+        }
+      }
       if (['session/list', 'session/search'].includes(endpoint)) {
         const all = arrayOf(record?.items)
         const items = all.filter(item => session(principal, object(item) ? item.sessionId : undefined))
