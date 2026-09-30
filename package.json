@@ -1,6 +1,6 @@
 {
   "name": "dsh-ui-auth",
-  "version": "0.6.5",
+  "version": "0.7.0",
   "description": "DSH Web UI 认证网关：登录保护全部 HTTP/WS 接口；用户管理、邀请码注册、TOTP 两步验证与通行密钥（Passkey/WebAuthn）登录。",
   "type": "module",
   "main": "./lib/index.js",
