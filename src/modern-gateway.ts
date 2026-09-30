@@ -265,20 +265,30 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
     return nonempty(sessionId) && auth.session(sessionId) === who.username
   }
 
-  function prepare(req: IncomingMessage): { status: number } | { who: Principal; status?: undefined } {
+  function prepare(req: IncomingMessage): { status: number } | { who: Principal; carrier?: string; status?: undefined } {
     const who = principal(req)
     if (who === undefined) return { status: 401 }
     const connection = ctx.get('connection') as NativeConnection | undefined
     if (connection === undefined) return { status: 503 }
     const host = req.headers.host
     if (typeof host !== 'string') return { status: 403 }
-    // Mint only an internal carrier cookie. The browser never receives it;
-    // every outer request still needs a live dsh-ui-auth session.
+    // Mint this process's carrier cookie. It is injected into every request we forward, and it is
+    // ALSO mirrored back to the browser (see handleHttp): the app's own connection module needs to
+    // hold a carrier of its own to finish its handshake, and without it the client loops on
+    // "connection lost". Mirroring is safe because the outer gate still demands a live
+    // dsh-ui-auth session before anything is forwarded.
     let cookie: string | undefined
+    let carrier: string | undefined
     try {
       const url = new URL(connection.authenticatedUrl(`http://${host}`))
       connection.authorizeIndex({ method: 'GET', url: url.pathname + url.search, headers: { host } }, {
-        writeHead(_status, headers) { cookie = headers?.['set-cookie']?.split(';')[0] }, end() {},
+        writeHead(_status, headers) {
+          const raw = headers?.['set-cookie']
+          if (raw === undefined) return
+          cookie = raw.split(';')[0]
+          carrier = raw
+        },
+        end() {},
       })
     } catch { return { status: 403 } }
     if (cookie === undefined) return { status: 503 }
@@ -288,7 +298,7 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
     const rejected = connection.requestRejection(req)
     if (rejected !== undefined) return { status: rejected }
     principalByRequest.set(req, who)
-    return { who }
+    return { who, ...(carrier === undefined ? {} : { carrier }) }
   }
 
   async function handleHttp(
@@ -299,6 +309,12 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
     const admitted = prepare(req)
     if (admitted.status !== undefined) { json(res, admitted.status, { error: 'Access denied' }); return true }
     const who = admitted.who
+    // 把现铸的载体 Cookie 回写给浏览器：客户端的连接模块需要自己持有一个载体才能完成握手，
+    // 否则会一直 "connection lost" 重连（实测：闸门透传时该症状消失）。外层仍由本插件的会话
+    // Cookie 把关——gate 对每个请求都会核对会话，所以浏览器持有该 Cookie 不构成绕过。
+    if (admitted.carrier !== undefined && !res.headersSent) {
+      try { res.setHeader('set-cookie', admitted.carrier) } catch (error) { /* 头已发出则忽略 */ }
+    }
     const url = new URL(req.url as string, 'http://local')
     const pathname = url.pathname
     const rule = extension('http', { pathname, method: req.method })
