@@ -30,7 +30,7 @@
     "test:compat:0.1.5": "node test/live-015-check.mjs",
     "test:ui": "node test/live-ui-check.mjs",
     "test:passkey": "node test/live-passkey-check.mjs",
-    "docs:matrix": "node build/docs-matrix.mjs --run SECURITY.md",
+    "docs:matrix": "node build/docs-matrix.mjs",
     "assets": "node test/shot.mjs",
     "test:pages": "node test/live-user-pages-check.mjs",
     "test:compat:0.2.0": "node test/live-020-check.mjs",
