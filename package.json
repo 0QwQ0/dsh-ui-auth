@@ -12,7 +12,6 @@
   "files": [
     "lib",
     "src",
-    "build",
     "docs",
     "assets",
     "cordis.patch.yml",
@@ -43,10 +42,9 @@
       "platform": "web"
     },
     "compatibility": {
-      "dsh": ">=0.1.1-rc.2 <0.2.0",
+      "dsh": ">=0.2.0-rc.2 <0.3.0",
       "dshReleases": {
-        "0.1.1-rc.2": "compatible",
-        "0.1.5-rc.1": "compatible"
+        "0.2.0-rc.2": "compatible"
       },
       "profiles": [
         "web"
