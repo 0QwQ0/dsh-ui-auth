@@ -18,6 +18,14 @@ import {
 } from './profile-kek.js'
 
 const keyDefault = (uid: string): string => `dsh-auth/profile-default/${uid}`
+const keyUsage = (uid: string): string => `dsh-auth/profile-usage/${uid}`
+const MAX_COUNTER = Number.MAX_SAFE_INTEGER
+
+/** 分享用量：所有者 uid → { 被授权者 uid → { 配置 id → 计数 } }。 */
+interface UsageDoc {
+  readonly v: 1
+  usage: Record<string, Record<string, { calls: number; tokens: number; updatedAt: string }>>
+}
 const BALANCE_TTL_MS = 60_000
 const BALANCE_MIN_INTERVAL_MS = 5_000
 
@@ -354,6 +362,42 @@ export class ProfileService {
     return (await this.deps.store.listShared(ownerUid)).map(profile => ({
       profileId: profile.profileId, label: profile.label, provider: profile.provider, model: profile.model,
     }))
+  }
+
+  // ---- WP5：分享用量（所有者可见；不含任何 Key 材料） ----
+
+  /** 记录一次由分享配置完成的调用。计数器饱和累加，避免溢出。 */
+  async recordUsage(ownerUid: string, targetUid: string, profileId: string, tokens?: number): Promise<void> {
+    const doc = await this.readUsage(ownerUid)
+    const byTarget = doc.usage[targetUid] ?? {}
+    const current = byTarget[profileId] ?? { calls: 0, tokens: 0 }
+    const addTokens = Number.isFinite(tokens) && (tokens as number) > 0 ? Math.floor(tokens as number) : 0
+    byTarget[profileId] = {
+      calls: Math.min(current.calls + 1, MAX_COUNTER),
+      tokens: Math.min(current.tokens + addTokens, MAX_COUNTER),
+      updatedAt: new Date(this.now()).toISOString(),
+    }
+    doc.usage[targetUid] = byTarget
+    await this.deps.seam.writeRaw(keyUsage(ownerUid), JSON.stringify(doc))
+  }
+
+  /** 所有者视角的用量汇总：谁用了哪条分享、多少次、多少 token。 */
+  async usageFor(ownerUid: string): Promise<Array<{ targetUid: string; profileId: string; calls: number; tokens: number; updatedAt: string }>> {
+    const doc = await this.readUsage(ownerUid)
+    const rows: Array<{ targetUid: string; profileId: string; calls: number; tokens: number; updatedAt: string }> = []
+    for (const [targetUid, byProfile] of Object.entries(doc.usage)) {
+      for (const [profileId, counters] of Object.entries(byProfile)) {
+        rows.push({ targetUid, profileId, calls: counters.calls, tokens: counters.tokens, updatedAt: counters.updatedAt })
+      }
+    }
+    return rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  }
+
+  private async readUsage(ownerUid: string): Promise<UsageDoc> {
+    const raw = await this.deps.seam.readRaw(keyUsage(ownerUid))
+    if (raw === undefined) return { v: 1, usage: {} }
+    const parsed = JSON.parse(raw) as UsageDoc
+    return parsed.v === 1 && typeof parsed.usage === 'object' && parsed.usage !== null ? parsed : { v: 1, usage: {} }
   }
 
   // ---- 余额 ----

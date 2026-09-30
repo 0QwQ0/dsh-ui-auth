@@ -131,6 +131,22 @@ test('admin sharing: grantee can use the key without seeing it, and revocation i
   assert.equal((await service.listShares(bobUid)).length, 0)
 })
 
+test('share usage is aggregated for the owner only, and carries no key material', async () => {
+  const h = await harness()
+  const { profileId } = await h.service.createShared(h.aliceUid, { label: '分享', provider: 'deepseek', model: 'deepseek-chat', apiKey: SHARED_KEY })
+  await h.service.grantShare(h.aliceUid, 'alice', h.bobUid, profileId)
+  await h.service.recordUsage(h.aliceUid, h.bobUid, profileId, 120)
+  await h.service.recordUsage(h.aliceUid, h.bobUid, profileId, 80)
+  const usage = await h.service.usageFor(h.aliceUid)
+  assert.equal(usage.length, 1)
+  assert.equal(usage[0].targetUid, h.bobUid)
+  assert.equal(usage[0].profileId, profileId)
+  assert.deepEqual({ calls: usage[0].calls, tokens: usage[0].tokens }, { calls: 2, tokens: 200 })
+  assert.equal(JSON.stringify(usage).includes(SHARED_KEY), false, '用量视图不含 Key')
+  // 用量按所有者分区：被授权者看不到所有者的统计
+  assert.deepEqual(await h.service.usageFor(h.bobUid), [])
+})
+
 test('balance: numbers only, cached for 60s and rate-limited per user', async () => {
   const h = await harness({ withBalance: true })
   await h.service.createProfile(h.aliceUid, { label: 'a', provider: 'deepseek', model: 'deepseek-chat', apiKey: ALICE_KEY })

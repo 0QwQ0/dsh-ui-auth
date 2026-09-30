@@ -2279,6 +2279,11 @@ export function apply(ctx: CordisContext): void {
           })
           return
         }
+        case 'shareUsage':
+          await runProfile(async (service, uid) => {
+            sendJson(res, 200, { ok: true, usage: await service.usageFor(uid) })
+          })
+          return
         case 'balanceQuery':
           await runProfile(async (service, uid) => {
             const result = await service.balanceOf(uid, str(args.profileId, 80) === '' ? undefined : str(args.profileId, 80))
