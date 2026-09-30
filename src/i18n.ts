@@ -13,6 +13,8 @@
 
 export type Locale = 'zh' | 'en'
 
+import { PHRASES } from './i18n-phrases.js'
+
 /** 一条词条：中文原文 + 英文译文。 */
 export interface Entry {
   readonly zh: string
@@ -143,7 +145,9 @@ export function localeFromAcceptLanguage(header: string | undefined): Locale | u
     .filter(entry => entry.tag !== '')
     .sort((a, b) => b.quality - a.quality)
   if (ranked.length === 0) return undefined
-  return normalizeLocale(ranked[0]?.tag)
+  // 优先挑"我们能识别的"最高优先级语言；都不认识时才按第一名归一化（非 zh 一律算 en）。
+  const supported = ranked.find(entry => /^zh\b/i.test(entry.tag) || /^en\b/i.test(entry.tag))
+  return normalizeLocale((supported ?? ranked[0])?.tag)
 }
 
 /** 供客户端 `ctx.locale.register` 使用的两套词典（键即上面的语义 key）。 */
@@ -155,4 +159,38 @@ export function dictionaries(): { zh: Record<string, string>; en: Record<string,
     en[key] = entry.en
   }
   return { zh, en }
+}
+
+// ===== 短语级替换（覆盖尚未逐点改造的 300+ 处中文） =====
+
+/**
+ * 按**长键优先**排序的短语表：短键先替换会吃掉长键（例如「模型」会破坏「模型与密钥」），
+ * 因此这里按中文原文长度降序，保证最长匹配先行。
+ */
+const ORDERED_PHRASES: ReadonlyArray<readonly [string, string]> = PHRASES
+  .filter(([zh, en]) => zh !== '' && en !== '' && zh !== en)
+  .slice()
+  .sort((a, b) => b[0].length - a[0].length)
+
+/**
+ * 把中文原文短语替换为英文（`zh` 原样返回）。
+ * 子串替换天然支持拼装式文案（`'当前登录：' + 名字`）。
+ */
+export function translatePhrase(locale: Locale, text: string): string {
+  if (locale !== 'en' || text === '') return text
+  let result = text
+  for (const [zh, en] of ORDERED_PHRASES) {
+    if (result.includes(zh)) result = result.split(zh).join(en)
+  }
+  return result
+}
+
+/** 服务端渲染页：对整页 HTML 做同样的替换（保留标签与脚本结构，只动可见文字）。 */
+export function translateHtml(locale: Locale, html: string): string {
+  return translatePhrase(locale, html)
+}
+
+/** 词典规模（供测试与文档引用）。 */
+export function phraseCount(): number {
+  return ORDERED_PHRASES.length
 }

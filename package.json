@@ -23,7 +23,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node build/client.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json",
-    "test": "npm run build && node --check lib/index.js && node --check lib/webauthn.js && node --check lib/client.js && node --check lib/passkey-browser.js && node --check lib/modern-gateway.js && node --check lib/modern-policy.js && node test/crypto-vectors.cjs && node test/totp-vectors.mjs && node test/client-smoke.cjs && node test/host-smoke.mjs && node test/login-page-check.mjs && node test/security-suite.mjs && node test/modern-policy.test.mjs && node test/profile-crypto.test.mjs && node test/profile-envelope.test.mjs && node test/profile-service.test.mjs && node test/user-routes.test.mjs && node test/profile-keys.test.mjs",
+    "test": "npm run build && node --check lib/index.js && node --check lib/webauthn.js && node --check lib/client.js && node --check lib/passkey-browser.js && node --check lib/modern-gateway.js && node --check lib/modern-policy.js && node test/crypto-vectors.cjs && node test/totp-vectors.mjs && node test/client-smoke.cjs && node test/host-smoke.mjs && node test/login-page-check.mjs && node test/security-suite.mjs && node test/modern-policy.test.mjs && node test/profile-crypto.test.mjs && node test/profile-envelope.test.mjs && node test/profile-service.test.mjs && node test/user-routes.test.mjs && node test/profile-keys.test.mjs && node test/i18n.test.mjs",
     "prepack": "npm test",
     "verify:clean": "npm run build && git diff --exit-code -- lib",
     "store:check": "node test/store-contract-check.mjs",
@@ -34,7 +34,8 @@
     "assets": "node test/shot.mjs",
     "test:pages": "node test/live-user-pages-check.mjs",
     "test:compat:0.2.0": "node test/live-020-check.mjs",
-    "test:compat:matrix": "node test/live-compat-matrix.mjs"
+    "test:compat:matrix": "node test/live-compat-matrix.mjs",
+    "test:i18n:live": "node test/live-i18n-check.mjs"
   },
   "dsh": {
     "bundle": {

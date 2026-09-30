@@ -37,6 +37,7 @@ import {
 import type { PasskeyRelyingParty, RelyingPartyIssue, StoredPasskey } from './webauthn.js'
 import { ProfileStore } from './model-profiles.js'
 import { KekRegistry } from './profile-kek.js'
+import { localeFromAcceptLanguage, translateHtml, translatePhrase, type Locale } from './i18n.js'
 import { ProfileService } from './profile-service.js'
 import { UserRouteRegistry, createDeepSeekRegistrar, routeIdOf } from './user-routes.js'
 
@@ -1123,6 +1124,30 @@ const COOKIE_NAME = 'dsh_auth_' + (() => {
       return clientIp(req, TRUST_PROXY)
     }
 
+    /**
+     * 服务端侧语言：宿主把"没有显式偏好"的情况交给浏览器，我们照同一规则办——
+     * 因此这里优先看请求的 `Accept-Language`（登录/注册页通常发生在 SPA 之前，请求头是唯一可靠信号），
+     * 读不到就回落到中文。客户端界面则由 DSH 的 locale 服务驱动（见 client.ts）。
+     */
+    function requestLocale(req?: IncomingMessage): Locale {
+      try {
+        const header = req?.headers['accept-language']
+        const value = Array.isArray(header) ? header[0] : header
+        return localeFromAcceptLanguage(value) ?? 'zh'
+      } catch (error) {
+        return 'zh'
+      }
+    }
+
+    /** 错误消息按同一词典翻译（`sendJson` 是唯一出口，故只在这里做一次）。 */
+    function localizedError(res: ServerResponse, obj: unknown): unknown {
+      const locale = (res as ServerResponse & { dshuaLocale?: Locale }).dshuaLocale
+      if (locale !== 'en' || typeof obj !== 'object' || obj === null) return obj
+      const record = obj as Record<string, unknown>
+      if (typeof record.error !== 'string') return obj
+      return { ...record, error: translatePhrase('en', record.error) }
+    }
+
     function sendJson(res: ServerResponse, status: number, obj: unknown): void {
       if (res.headersSent) { try { res.destroy() } catch (e) { /* ignore */ } return }
       try {
@@ -1130,7 +1155,7 @@ const COOKIE_NAME = 'dsh_auth_' + (() => {
           'content-type': 'application/json; charset=utf-8',
           'cache-control': 'no-store',
         })
-        res.end(JSON.stringify(obj))
+        res.end(JSON.stringify(localizedError(res, obj)))
       } catch (err) {
         try { res.destroy() } catch (e) { /* ignore */ }
       }
@@ -1419,7 +1444,7 @@ const COOKIE_NAME = 'dsh_auth_' + (() => {
         }
         try {
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-          res.end(loginPage(loginPasskeyUi(req)))
+          res.end(translateHtml(requestLocale(req), loginPage(loginPasskeyUi(req))))
         } catch (err) { try { res.destroy() } catch (e) { /* ignore */ } }
         return
       }
@@ -2006,7 +2031,7 @@ const COOKIE_NAME = 'dsh_auth_' + (() => {
         }
         try {
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-          res.end(registerPage())
+          res.end(translateHtml(requestLocale(req), registerPage()))
         } catch (err) { try { res.destroy() } catch (e) { /* ignore */ } }
         return
       }
@@ -2211,7 +2236,9 @@ const COOKIE_NAME = 'dsh_auth_' + (() => {
 
     async function handleAuthPath(req: IncomingMessage, res: ServerResponse, pathname: string): Promise<void> {
       if (pathname === '/auth/login') { await handleLogin(req, res); return }
-      if (pathname === '/auth/register') { await handleRegister(req, res); return }
+      // 请求级语言（错误消息按同一词典翻译；页面另行翻译）
+          ;(res as ServerResponse & { dshuaLocale?: Locale }).dshuaLocale = requestLocale(req)
+          if (pathname === '/auth/register') { await handleRegister(req, res); return }
       if (pathname === '/auth/register/success') {
         if (req.method === 'GET' || req.method === 'HEAD') {
           const token = readCookie(req, COOKIE_NAME)
@@ -2224,7 +2251,7 @@ const COOKIE_NAME = 'dsh_auth_' + (() => {
           }
           try {
             res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-            res.end(registerSuccessPage(who))
+            res.end(translateHtml(requestLocale(req), registerSuccessPage(who)))
           } catch (err) { try { res.destroy() } catch (e) { /* ignore */ } }
           return
         }

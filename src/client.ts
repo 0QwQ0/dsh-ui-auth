@@ -1391,7 +1391,7 @@
 		// @deepseek-ai/dsh-client-ui-renderer 提供；同时 0.1.5 让客户端到达顺序变成显式
 		// 依赖（dsh.client.inject 不再只是信息性元数据）。不声明 inject 时本行可能先于
 		// 该服务到达 —— 旧实现此时静默 return，表现为设置面板里「用户管理」整个消失。
-		import { dictionaries, message, normalizeLocale } from './i18n.js'
+		import { dictionaries, message, normalizeLocale, translatePhrase } from './i18n.js'
 
 		// ============ i18n（与 DSH 的 locale 服务联动） ============
 		// DSH 客户端提供 `ctx.locale`：register 注册词典、bind 取 t、getSnapshot().active 得到当前语言；
@@ -1413,11 +1413,102 @@
 			}, [])
 		}
 
+		// ===== 短语级本地化：在**我们自己的 DOM** 上按词典替换，覆盖尚未逐点 t() 的文案 =====
+		// 全插件有 300+ 处中文，逐点 t() 既慢又易漏；这里对可见文本节点与
+		// placeholder/aria-label/title 做子串替换，并**记住原文**以便切回中文（双向、可还原）。
+		var activeLocale: 'zh' | 'en' = 'zh'
+		var localeRef: LocaleService | undefined
+		var TRANSLATED_ATTRS = ['placeholder', 'aria-label', 'title']
+		var textOriginals = new WeakMap<Text, string>()
+		var attrOriginals = new WeakMap<Element, Record<string, string>>()
+
+		function translateInside(root: Node): void {
+			if (typeof document === 'undefined' || typeof NodeFilter === 'undefined') return
+			var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+			var node = walker.nextNode() as Text | null
+			while (node !== null) {
+				var original = textOriginals.get(node)
+				if (original === undefined) { original = node.nodeValue ?? ''; textOriginals.set(node, original) }
+				var next = activeLocale === 'en' ? translatePhrase('en', original) : original
+				if (node.nodeValue !== next) node.nodeValue = next
+				node = walker.nextNode() as Text | null
+			}
+			var element = root as Element
+			if (typeof element.querySelectorAll !== 'function') return
+			var fields = element.querySelectorAll('[placeholder],[aria-label],[title]')
+			for (var i = 0; i < fields.length; i++) {
+				var field = fields[i] as HTMLElement
+				var store = attrOriginals.get(field) ?? {}
+				for (var j = 0; j < TRANSLATED_ATTRS.length; j++) {
+					var name = TRANSLATED_ATTRS[j]
+					if (typeof field.getAttribute !== 'function' || !field.hasAttribute(name)) continue
+					if (store[name] === undefined) store[name] = field.getAttribute(name) ?? ''
+					var value = activeLocale === 'en' ? translatePhrase('en', store[name]) : store[name]
+					if (field.getAttribute(name) !== value) field.setAttribute(name, value)
+				}
+				attrOriginals.set(field, store)
+			}
+		}
+
+		/** 只处理我们自己的区域（面板与设置对话框），不碰宿主其它界面。 */
+		function translateOurDom(): void {
+			if (typeof document === 'undefined') return
+			// 即时重新探测：DSH 的 locale 同步可能晚于本插件的 apply，缓存会被一次早到的 zh 覆盖。
+			try { activeLocale = detectLocale() } catch (error) { /* 保持上一次的值 */ }
+			var roots = document.querySelectorAll('.dshua, [role=dialog]')
+			for (var i = 0; i < roots.length; i++) translateInside(roots[i])
+		}
+
+		function installLocaleObserver(): void {
+			if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return
+			// apply 阶段 document.body 往往还不存在，直接 observe 会静默失败（表现就是"面板里的中文没被替换"）。
+			// 等待 body 就绪，并在挂上后立刻跑一次；此后的渲染由观察器覆盖。
+			var attach = function (): void {
+				if (document.body === null || document.body === undefined) { setTimeout(attach, 200); return }
+				new MutationObserver(function () { translateOurDom() })
+					.observe(document.body, { childList: true, subtree: true, characterData: true })
+				translateOurDom()
+			}
+			attach()
+		}
+
+		/**
+		 * 探测当前语言。以 **DSH 绑定的 t()** 为准——它由宿主 locale 服务驱动，一定反映真实语言；
+		 * 快照读取与 documentElement.lang 仅作兜底，且全程容错（任何一环抛错都不能让整套替换失效）。
+		 */
+		function detectLocale(): 'zh' | 'en' {
+			try {
+				if (t('models.title') === message('en', 'models.title')) return 'en'
+				if (t('models.title') === message('zh', 'models.title')) return 'zh'
+			} catch (error) { /* 落到下面的兜底 */ }
+			try {
+				var snapshot = localeRef?.getSnapshot?.()
+				var active = snapshot === undefined || snapshot === null ? '' : String(snapshot.active ?? '')
+				if (active !== '') return normalizeLocale(active)
+			} catch (error) { /* ignore */ }
+			try {
+				var tag = typeof document !== 'undefined' ? document.documentElement.lang : ''
+				if (tag !== '') return normalizeLocale(tag)
+			} catch (error) { /* ignore */ }
+			return 'zh'
+		}
+
+		/** 读取当前语言并立即应用（切换语言时由 locale/change 再调一次）。 */
+		function refreshLocale(): void {
+			try {
+				activeLocale = detectLocale()
+				translateOurDom()
+			} catch (error) {
+				// 本地化失败绝不能影响插件其余功能
+			}
+		}
+
 		exports.inject = ['slots']
 		exports.apply = function apply(ctx: PluginContext) {
 			// 与 DSH 的 locale 服务联动：注册我们的词典并用它的 t（含 en 回退链与 {name} 插值）。
 			// 宿主没有该服务时保持内置词典，插件照常工作。
 			const localeService = ctx.get('locale') as LocaleService | undefined
+			localeRef = localeService
 			const register = localeService?.register
 			const bind = localeService?.bind
 			const effect = ctx.effect
@@ -1425,7 +1516,12 @@
 				effect(function () { return register('dsh-ui-auth', dictionaries()) })
 				t = bind('dsh-ui-auth')
 			}
-			if (typeof ctx.on === 'function') ctx.on('locale/change', notifyLocaleChange)
+			// 先应用一次（首帧即按当前语言渲染），并在 DSH 广播切换时重应用 + 让页面重渲染。
+			refreshLocale()
+			installLocaleObserver()
+			if (typeof ctx.on === 'function') {
+				ctx.on('locale/change', function () { refreshLocale(); notifyLocaleChange() })
+			}
 			injectAuthCss()
 			mountSettings(ctx, 0)
 		}
