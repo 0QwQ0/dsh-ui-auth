@@ -42,6 +42,11 @@ export interface PrivateProfile {
   readonly baseUrl?: string
   /** 不可逆提示（尾 4 位），仅所有者本人可见。 */
   readonly hint: string
+  /**
+   * 信封结构（WP4）：随机 DEK 被会话 userKek 包裹后的密文。
+   * 缺失表示 v1 记录（口令直接派生 KEK 加密 API Key），仍可被 `openPrivate` 打开。
+   */
+  readonly wrappedDek?: SealedKey
   readonly sealed: SealedKey
   readonly createdAt: string
   readonly updatedAt: string

@@ -28,6 +28,7 @@
     "src/modern-gateway.ts",
     "src/modern-policy.ts",
     "src/model-profiles.ts",
-    "src/profile-kek.ts"
+    "src/profile-kek.ts",
+    "src/profile-service.ts"
   ]
 }
