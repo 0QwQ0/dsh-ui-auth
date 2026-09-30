@@ -60,6 +60,11 @@ jobs:
     name: Publish to npm
     needs: build
     runs-on: ubuntu-latest
+    # Trusted Publishing（OIDC）：GitHub 现签发短期身份令牌给 npm，无需长期 token。
+    # 注意：必须在 GitHub 托管的 runner 上运行，且 npm 侧要配置 Trusted Publisher。
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Resolve the latest release
         id: target
@@ -111,15 +116,26 @@ jobs:
             echo "::notice::准备发布 dsh-ui-auth@${{ steps.target.outputs.version }}"
           fi
 
-      - name: Require the NPM_TOKEN secret
+      # 认证路径：优先 Trusted Publishing（配置后请删除 NPM_TOKEN Secret）；
+      # 退路是 granular token（Packages: Read and write）。两者都不在时明确失败。
+      - name: Choose the auth path
+        id: auth
         if: steps.target.outputs.skip != 'true' && steps.npmcheck.outputs.published == 'false'
         env:
           TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          if [ -z "${TOKEN}" ]; then
-            echo "::error::缺少仓库 Secret NPM_TOKEN（granular token，Packages: Read and write，开启 Bypass 2FA）"
-            exit 1
+          if [ -n "${TOKEN}" ]; then
+            echo "::notice::检测到 NPM_TOKEN：本次用 token 发布（若已在 npm 配置 Trusted Publisher，建议删除该 Secret 改用 OIDC）"
+            echo "mode=token" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::未配置 NPM_TOKEN：本次走 Trusted Publishing（OIDC）"
+            echo "mode=oidc" >> "$GITHUB_OUTPUT"
           fi
+
+      # Trusted Publishing 需要 npm >= 11.5.1（runner 自带的版本往往更旧）
+      - name: Use a Trusted-Publishing-capable npm
+        if: steps.target.outputs.skip != 'true' && steps.npmcheck.outputs.published == 'false'
+        run: npm install -g npm@latest && npm --version
 
       - name: Install dependencies
         if: steps.target.outputs.skip != 'true' && steps.npmcheck.outputs.published == 'false'
@@ -127,10 +143,31 @@ jobs:
         env:
           PUPPETEER_SKIP_DOWNLOAD: 'true'
 
-      # npm publish 会触发 prepack（= npm test）：从 src/*.ts 构建 lib/*.js 并跑完整测试链
-      - name: Publish
-        if: steps.target.outputs.skip != 'true' && steps.npmcheck.outputs.published == 'false'
-        run: npm publish --provenance --access public --registry=https://registry.npmjs.org
+      # npm publish 会触发 prepack（= npm test）：从 src/*.ts 构建 lib/*.js 并跑完整测试链。
+      # 409 表示该版本已在 npm 的**暂存区**（staged publish，需维护者 2FA 批准）：视为已发布，避免每日补发布假失败。
+      - name: Publish via Trusted Publishing (OIDC)
+        if: steps.target.outputs.skip != 'true' && steps.npmcheck.outputs.published == 'false' && steps.auth.outputs.mode == 'oidc'
+        run: |
+          set +e
+          output=$(npm publish --access public --registry=https://registry.npmjs.org 2>&1); status=$?
+          echo "$output"
+          if [ $status -ne 0 ] && echo "$output" | grep -qE 'E409|previously staged'; then
+            echo "::notice::dsh-ui-auth@${{ steps.target.outputs.version }} 已在 npm 暂存区（E409）：视为已发布，等待维护者批准"
+            exit 0
+          fi
+          exit $status
+
+      - name: Publish via token
+        if: steps.target.outputs.skip != 'true' && steps.npmcheck.outputs.published == 'false' && steps.auth.outputs.mode == 'token'
+        run: |
+          set +e
+          output=$(npm publish --access public --registry=https://registry.npmjs.org 2>&1); status=$?
+          echo "$output"
+          if [ $status -ne 0 ] && echo "$output" | grep -qE 'E409|previously staged'; then
+            echo "::notice::dsh-ui-auth@${{ steps.target.outputs.version }} 已在 npm 暂存区（E409）：视为已发布，等待维护者批准"
+            exit 0
+          fi
+          exit $status
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
