@@ -386,6 +386,16 @@ export class ProfileService {
     await this.deps.seam.writeRaw(keyUsage(ownerUid), JSON.stringify(doc))
   }
 
+  /** 所有者视角的授权表：每条分享被授予给了哪些用户（未使用过也在此列出）。 */
+  async grantsOf(ownerUid: string): Promise<Array<{ targetUid: string; profileIds: string[]; updatedAt: string }>> {
+    const table = await this.deps.store.readGrants(ownerUid)
+    return Object.entries(table.grants).map(([targetUid, entry]) => ({
+      targetUid,
+      profileIds: entry.profileIds,
+      updatedAt: entry.updatedAt,
+    }))
+  }
+
   /** 所有者视角的用量汇总：谁用了哪条分享、多少次、多少 token。 */
   async usageFor(ownerUid: string): Promise<Array<{ targetUid: string; profileId: string; calls: number; tokens: number; updatedAt: string }>> {
     const doc = await this.readUsage(ownerUid)

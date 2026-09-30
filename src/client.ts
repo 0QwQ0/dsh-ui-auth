@@ -1054,28 +1054,52 @@
 		}
 
 		// ============ 分享管理（管理员；v0.7.0） ============
-		// 管理员把自己的模型分享给指定用户：被授权者可用、可看余额，但看不到 Key；
-		// 同时展示每条分享的用量（谁用了多少次、多少 token）——用量不含任何 Key 材料。
+		// 管理员把自己的模型分享给指定用户：被授权者可用、可看余额，但看不到 Key。
+		// 界面结构（按所有者反馈调整）：所有分享 Key 收进**下拉菜单**避免挤占空间；
+		// 选中某条后，下方显示它的**授权用户列表**，可逐个撤销；创建时提供 baseURL 与「检查 Key」。
 		function SharesPage() {
-			var st = React.useState({ loaded: false, shared: [] as any[], usage: [] as any[], error: '' })
+			var st = React.useState({ loaded: false, shared: [] as any[], usage: [] as any[], grants: [] as any[], error: '', selected: '' })
 			var state = st[0], setState = st[1]
-			var fm = React.useState({ label: '', model: 'deepseek-chat', apiKey: '' })
+			var fm = React.useState({ label: '', model: 'deepseek-chat', baseUrl: '', apiKey: '' })
 			var form = fm[0], setForm = fm[1]
-			var gr = React.useState({ profileId: '', username: '' })
+			var tk = React.useState({ busy: false, result: '' })
+			var keyTest = tk[0], setKeyTest = tk[1]
+			var gr = React.useState({ username: '' })
 			var grant = gr[0], setGrant = gr[1]
 
-			function refresh() {
-				Promise.all([rpc('shareOwn', {}), rpc('shareUsage', {})]).then(function (r) {
-					setState({ loaded: true, shared: r[0].shared || [], usage: r[1].usage || [], error: '' })
+			function refresh(pick?: string) {
+				Promise.all([rpc('shareOwn', {}), rpc('shareUsage', {}), rpc('shareGrants', {})]).then(function (r) {
+					var shared = r[0].shared || []
+					setState(function (prev: any) {
+						var selected = pick !== undefined ? pick : prev.selected
+						if (selected === '' && shared.length > 0) selected = shared[0].profileId
+						return { loaded: true, shared: shared, usage: r[1].usage || [], grants: r[2].grants || [], error: '', selected: selected }
+					})
 				}).catch(function (e) {
-					setState({ loaded: true, shared: [], usage: [], error: errText(e) })
+					setState(function (prev: any) { return { ...prev, loaded: true, error: errText(e) } })
 				})
 			}
 			React.useEffect(function () { refresh() }, [])
-			function act(method: string, body: Record<string, unknown>): void {
-				rpc(method, body).then(function () { refresh() }).catch(function (e) {
+			function act(method: string, body: Record<string, unknown>, pick?: string): void {
+				rpc(method, body).then(function () { refresh(pick) }).catch(function (e) {
 					setState(function (prev: any) { return { ...prev, error: errText(e) } })
 				})
+			}
+			function checkKey(): void {
+				setKeyTest({ busy: true, result: '' })
+				rpc('profileTestKey', { apiKey: form.apiKey, baseUrl: form.baseUrl }).then(function (j) {
+					var b = j.balance || {}
+					setKeyTest({ busy: false, result: '✔ Key 可用，余额 ' + (b.currency || 'CNY') + ' ' + String(b.total) })
+				}).catch(function (e) {
+					setKeyTest({ busy: false, result: '✘ ' + errText(e) })
+				})
+			}
+			function granteesOf(profileId: string): any[] {
+				var rows: any[] = []
+				state.grants.forEach(function (entry: any) {
+					if ((entry.profileIds || []).indexOf(profileId) !== -1) rows.push(entry)
+				})
+				return rows
 			}
 			function usageOf(profileId: string): string {
 				var rows = state.usage.filter(function (u: any) { return u.profileId === profileId })
@@ -1090,38 +1114,65 @@
 			if (state.error !== '') {
 				children.push(React.createElement('div', { style: { color: 'var(--dsw-alias-label-error, #ff6b6b)', marginBottom: 10 } }, state.error))
 			}
-			children.push(React.createElement('div', { key: 'new', style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 } },
+
+			// 创建表单：label / 模型 / baseURL / Key + 检查 Key
+			children.push(React.createElement('div', { key: 'new', style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 } },
 				React.createElement('input', { placeholder: '分享名称', value: form.label, onChange: function (e: any) { setForm({ ...form, label: e.target.value }) } }),
 				React.createElement('input', { placeholder: '模型', value: form.model, onChange: function (e: any) { setForm({ ...form, model: e.target.value }) } }),
+				React.createElement('input', { placeholder: 'baseURL（如 https://api.deepseek.com）', value: form.baseUrl, onChange: function (e: any) { setForm({ ...form, baseUrl: e.target.value }) } }),
 				React.createElement('input', { type: 'password', placeholder: 'API Key', value: form.apiKey, onChange: function (e: any) { setForm({ ...form, apiKey: e.target.value }) } }),
+				React.createElement('button', { onClick: checkKey, disabled: form.apiKey === '' || keyTest.busy }, keyTest.busy ? '检查中…' : '检查 Key'),
 				React.createElement('button', {
 					disabled: form.model === '' || form.apiKey === '',
 					onClick: function () {
-						act('shareCreate', { label: form.label, provider: 'deepseek', model: form.model, apiKey: form.apiKey })
-						setForm({ label: '', model: 'deepseek-chat', apiKey: '' })
+						act('shareCreate', { label: form.label, provider: 'deepseek', model: form.model, baseUrl: form.baseUrl, apiKey: form.apiKey })
+						setForm({ label: '', model: 'deepseek-chat', baseUrl: '', apiKey: '' })
+						setKeyTest({ busy: false, result: '' })
 					},
 				}, '创建分享配置')))
+			if (keyTest.result !== '') {
+				children.push(React.createElement('div', { key: 'keytest', style: { fontSize: 12, marginBottom: 10, color: 'var(--dsw-alias-label-secondary)' } }, keyTest.result))
+			}
+
+			// 下拉菜单：所有分享 Key 收进一个 select，避免大量条目挤占空间
+			if (state.shared.length > 0) {
+				children.push(React.createElement('div', { key: 'picker', style: { display: 'flex', gap: 8, alignItems: 'center', margin: '6px 0 12px' } },
+					React.createElement('span', null, '分享的 API Key：'),
+					React.createElement('select', {
+						value: state.selected,
+						'aria-label': '选择分享的 API Key',
+						onChange: function (e: any) { setState(function (prev: any) { return { ...prev, selected: e.target.value } }) },
+					}, state.shared.map(function (p: any) {
+						return React.createElement('option', { key: p.profileId, value: p.profileId }, (p.label || '分享') + ' · ' + p.model)
+					}))))
+			}
+
+			// 选中项：授权列表（可撤销）+ 新增授权 + 用量
 			state.shared.forEach(function (p: any) {
-				children.push(React.createElement('div', { key: p.profileId, style: { padding: '6px 0', borderTop: '1px solid var(--dsw-alias-border-l2)' } },
-					React.createElement('div', null, (p.label || '分享') + ' · ' + p.model),
-					React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 12 } }, '用量：' + usageOf(p.profileId)),
-					React.createElement('div', { style: { display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap' } },
+				if (p.profileId !== state.selected) return
+				var rows = granteesOf(p.profileId)
+				children.push(React.createElement('div', { key: p.profileId, style: { borderTop: '1px solid var(--dsw-alias-border-l2)', paddingTop: 10 } },
+					React.createElement('div', { style: { fontWeight: 600 } }, (p.label || '分享') + ' · ' + p.model),
+					React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 12, margin: '4px 0 8px' } }, '用量：' + usageOf(p.profileId)),
+					React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, '已授权用户'),
+					rows.length === 0
+						? React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 12 } }, '尚未授权给任何用户')
+						: React.createElement('div', null, rows.map(function (entry: any) {
+							return React.createElement('div', { key: entry.targetUid, style: { display: 'flex', gap: 8, alignItems: 'center', padding: '3px 0' } },
+								React.createElement('span', null, entry.username),
+								React.createElement('button', {
+									onClick: function () { act('shareRevoke', { profileId: p.profileId, username: entry.username }) },
+								}, '取消授权'))
+						})),
+					React.createElement('div', { style: { display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 } },
 						React.createElement('input', {
-							placeholder: '授予用户名', value: grant.profileId === p.profileId ? grant.username : '',
-							onChange: function (e: any) { setGrant({ profileId: p.profileId, username: e.target.value }) },
+							placeholder: '授予用户名', value: grant.username,
+							onChange: function (e: any) { setGrant({ username: e.target.value }) },
 						}),
 						React.createElement('button', {
-							onClick: function () {
-								act('shareGrant', { profileId: p.profileId, username: grant.username })
-								setGrant({ profileId: '', username: '' })
-							},
-						}, '授予'),
-						React.createElement('button', {
-							onClick: function () {
-								act('shareRevoke', { profileId: p.profileId, username: grant.username })
-								setGrant({ profileId: '', username: '' })
-							},
-						}, '撤销'))))
+							disabled: grant.username === '',
+							onClick: function () { act('shareGrant', { profileId: p.profileId, username: grant.username }, p.profileId); setGrant({ username: '' }) },
+						}, '授予'))))
 			})
 			if (state.loaded && state.shared.length === 0) {
 				children.push(React.createElement('div', { key: 'empty', style: { color: 'var(--dsw-alias-label-secondary)' } }, '还没有分享配置。'))

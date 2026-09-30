@@ -2404,6 +2404,24 @@ export function apply(ctx: CordisContext): void {
           })
           return
         }
+        case 'shareGrants': {
+          await runProfile(async (service, uid) => {
+            // 授权表里只有 uid：映射回用户名，界面才能直接显示"授权给了谁"并给出撤销按钮。
+            const byUid = new Map<string, string>()
+            for (const username of state.users.keys()) {
+              const targetUid = await service.uidOfName(username)
+              if (targetUid !== undefined) byUid.set(targetUid, username)
+            }
+            const grants = (await service.grantsOf(uid)).map(entry => ({
+              username: byUid.get(entry.targetUid) ?? entry.targetUid.slice(0, 8),
+              targetUid: entry.targetUid,
+              profileIds: entry.profileIds,
+              updatedAt: entry.updatedAt,
+            }))
+            sendJson(res, 200, { ok: true, grants })
+          })
+          return
+        }
         case 'shareUsage':
           await runProfile(async (service, uid) => {
             sendJson(res, 200, { ok: true, usage: await service.usageFor(uid) })
