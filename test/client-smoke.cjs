@@ -91,7 +91,7 @@ const tick = () => new Promise((r) => setTimeout(r, 20))
   check('user: models lock registered', modelsReg !== undefined)
   if (modelsReg !== undefined) {
     check('user: models priority -1 (content winner)', modelsReg.opts.priority === -1, 'priority=' + modelsReg.opts.priority)
-    check('user: models label', modelsReg.opts.label() === '模型')
+    check('user: models label', modelsReg.opts.label() === '模型与密钥')
     const texts = []
     const walk = (node) => {
       if (node === null || node === undefined) return
@@ -101,11 +101,12 @@ const tick = () => new Promise((r) => setTimeout(r, 20))
       if (Array.isArray(node.children)) node.children.forEach(walk)
     }
     walk(modelsReg.render().type())
-    check('user: locked notice text present', texts.some((t) => t.includes('仅管理员可访问')), texts.join('|'))
+    check('user: per-user panel renders', texts.some((t) => t.includes('模型与 API Key')), texts.join('|'))
+    check('user: panel states the no-config block (Q2)', texts.some((t) => t.includes('会被拒绝')), texts.join('|'))
   }
 
   // ---- 静态断言 ----
-  check('nav-hide rule present (hides shipped models nav row)', code.includes('dsh-ui-auth-navhide') && code.includes('nth-child(2)'))
+  check('nav-hide hack removed (0.2.0 settings-shell owns the nav)', !code.includes('dsh-ui-auth-navhide') && !code.includes('nth-child(2)'))
   check('button color uses on-primary token', code.includes('--dsw-alias-label-primary-foreground'))
   check('button no longer uses contrast-fill', !code.includes('--dsw-alias-button-contrast-fill'))
   check('danger button uses on-primary token', /\.dshua button\.danger\{[^}]*--dsw-alias-label-primary-foreground/.test(code))
