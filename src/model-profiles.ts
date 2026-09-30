@@ -151,6 +151,8 @@ const aadOf = (uid: string, profileId: string): string => `${uid}/${profileId}`
 
 /** 仅暴露不可逆提示：尾 4 位（长度为 0 时不显示）。 */
 export function keyHint(apiKey: string): string {
+  // 只回「前 4 + … + 后 4」的掩码，完整 Key 永不离开加密存储。
+  if (apiKey.length >= 12) return `${apiKey.slice(0, 4)}...${apiKey.slice(-4)}`
   return apiKey.length >= 4 ? `…${apiKey.slice(-4)}` : '…'
 }
 

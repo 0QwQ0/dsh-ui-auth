@@ -212,6 +212,17 @@
 			'.dshua .switch input:checked + .track{background:var(--dsw-alias-brand-primary,#4f7cff)}',
 			'.dshua .switch input:checked + .track .thumb{transform:translateX(18px)}',
 			'.dshua .switch input:disabled + .track{opacity:.55}',
+			// —— 表格 / 工具条 / 字段：与「用户管理」页保持同一套排班（12px 标题、≥10px 横向、≥5px 纵向） ——
+			'.dshua table{border-collapse:collapse;width:100%;margin:4px 0}',
+			'.dshua th,.dshua td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l2);font-size:13px}',
+			'.dshua th{color:var(--dsw-alias-label-secondary);font-weight:600}',
+			'.dshua button{font-size:12px;padding:6px 12px}',
+			'.dshua .toolbar{display:flex;flex-wrap:wrap;gap:5px 10px;align-items:flex-end}',
+			'.dshua .actions{display:flex;flex-wrap:wrap;gap:5px 10px;margin:10px 0 0}',
+			'.dshua .field{display:flex;flex-direction:column;margin:0 0 10px;min-width:160px}',
+			'.dshua .field > label{margin:0 0 4px;font-size:12px;color:var(--dsw-alias-label-secondary)}',
+			'.dshua .muted{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:20px}',
+			'.dshua input,.dshua select{min-width:120px}',
 		].join('')
 
 		function injectAuthCss() {
@@ -227,13 +238,7 @@
 		// ============ RPC（cookie 认证的 /auth/rpc/* 端点，服务器端按会话鉴权） ============
 		/**
 		 * 调用 
-.dshua table{border-collapse:collapse;width:100%;margin:4px 0}
-.dshua th,.dshua td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l2);font-size:13px}
-.dshua th{color:var(--dsw-alias-label-secondary);font-weight:600}
-.dshua .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-.dshua .muted{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:20px}
-.dshua input,.dshua select{min-width:120px}
-`/auth/rpc/<method>`。应答是各方法自带的 JSON 信封，形状在调用点标注
+* 调用 `/auth/rpc/<method>`。应答是各方法自带的 JSON 信封，形状在调用点标注
 		 * （MeResult / UsersResult / InvitesResult / TotpStatusResult / TotpGenerateResult）；
 		 * 信封本身是 `RpcResult`，这里按 `any` 传递以保留调用点标注。
 		 * 401 时先跳转登录页，再抛 code === 'session-expired' 的错误。
@@ -957,11 +962,13 @@
 			// —— 单组功能按钮 ——
 			var toolbar: any[] = []
 			if (state.loaded && !state.unlocked) {
-				toolbar.push(React.createElement('input', {
-					key: 'pw', type: 'password', placeholder: '当前登录口令（解锁私人密钥）', value: password,
+				toolbar.push(React.createElement('div', { key: 'pw-field', className: 'field' },
+					React.createElement('label', null, '当前登录口令'),
+				React.createElement('input', {
+					key: 'pw', type: 'password', placeholder: '用于解锁私人密钥（不保存）', value: password,
 					'aria-label': '当前登录口令', style: { minWidth: 220 },
 					onChange: function (e: any) { setPassword(e.target.value) },
-				}))
+				})))
 				toolbar.push(React.createElement('button', {
 					key: 'unlock', disabled: password === '',
 					onClick: function () { act('profileUnlock', { password: password }); setPassword('') },
@@ -1017,19 +1024,28 @@
 
 			// —— 新增配置（放在表格下方，占满一行便于填写）——
 			children.push(React.createElement('div', { key: 'add-title', style: { fontWeight: 600, margin: '14px 0 6px' } }, '添加我自己的配置'))
-			children.push(React.createElement('div', { key: 'add', className: 'toolbar' },
-				React.createElement('input', { placeholder: '名称', value: form.label, onChange: function (e: any) { setForm({ ...form, label: e.target.value }) } }),
-				React.createElement('input', { placeholder: '模型（如 deepseek-chat）', value: form.model, onChange: function (e: any) { setForm({ ...form, model: e.target.value }) } }),
-				React.createElement('input', { placeholder: 'baseURL（可留空用官方地址）', value: form.baseUrl, onChange: function (e: any) { setForm({ ...form, baseUrl: e.target.value }) } }),
-				React.createElement('input', { type: 'password', placeholder: 'API Key', value: form.apiKey, onChange: function (e: any) { setForm({ ...form, apiKey: e.target.value }) } }),
-				React.createElement('button', {
-					disabled: form.model === '' || form.apiKey === '',
-					onClick: function () {
-						act('profileCreate', { label: form.label, provider: 'deepseek', model: form.model, baseUrl: form.baseUrl, apiKey: form.apiKey })
-						setForm({ label: '', model: 'deepseek-chat', baseUrl: '', apiKey: '' })
-					},
-				}, '添加')))
-
+			// 字段用 label + 输入框（与「用户管理」一致：12px 标题在左上角，纵向间距 ≥10px）
+			children.push(React.createElement('div', { key: 'add', className: 'toolbar', style: { alignItems: 'flex-end' } },
+				React.createElement('div', { className: 'field' },
+					React.createElement('label', null, '名称'),
+					React.createElement('input', { placeholder: '例如：我的 DeepSeek', value: form.label, onChange: function (e: any) { setForm({ ...form, label: e.target.value }) } })),
+				React.createElement('div', { className: 'field' },
+					React.createElement('label', null, '模型'),
+					React.createElement('input', { placeholder: 'deepseek-chat', value: form.model, onChange: function (e: any) { setForm({ ...form, model: e.target.value }) } })),
+				React.createElement('div', { className: 'field' },
+					React.createElement('label', null, 'baseURL（留空用官方地址）'),
+					React.createElement('input', { placeholder: 'https://api.deepseek.com', value: form.baseUrl, onChange: function (e: any) { setForm({ ...form, baseUrl: e.target.value }) } })),
+				React.createElement('div', { className: 'field' },
+					React.createElement('label', null, 'API Key'),
+					React.createElement('input', { type: 'password', placeholder: 'sk-…', value: form.apiKey, onChange: function (e: any) { setForm({ ...form, apiKey: e.target.value }) } })),
+				React.createElement('div', { className: 'actions', style: { margin: '0 0 10px' } },
+					React.createElement('button', {
+						disabled: form.model === '' || form.apiKey === '',
+						onClick: function () {
+							act('profileCreate', { label: form.label, provider: 'deepseek', model: form.model, baseUrl: form.baseUrl, apiKey: form.apiKey })
+							setForm({ label: '', model: 'deepseek-chat', baseUrl: '', apiKey: '' })
+						},
+					}, '添加'))))
 			return React.createElement('div', { className: 'dshua' }, React.createElement('div', { className: 'card' }, children))
 		}
 

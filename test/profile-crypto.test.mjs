@@ -114,7 +114,7 @@ test('grants and received shares stay key-free and per-user', async () => {
 })
 
 test('key hints are irreversible and KDF parameters are versioned', async () => {
-  assert.equal(keyHint('sk-abcdef1234567890'), '…7890')
+  assert.equal(keyHint('sk-abcdef1234567890'), 'sk-a...7890')
   assert.equal(keyHint('ab'), '…')
   const sealed = await sealPrivate('pw', ALICE, 'p1', SECRET, ITER)
   assert.equal(sealed.v, 1)

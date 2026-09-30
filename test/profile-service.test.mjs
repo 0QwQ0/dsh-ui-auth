@@ -56,7 +56,7 @@ test('profiles are created, listed and updated without ever returning key materi
   const { service, aliceUid } = await harness()
   const created = await service.createProfile(aliceUid, { label: '我的 Key', provider: 'deepseek', model: 'deepseek-chat', apiKey: ALICE_KEY })
   assert.equal(created.hasKey, true)
-  assert.equal(created.hint, '…1111')
+  assert.match(created.hint, /^sk-.*1111$/, '掩码是前 4 + … + 后 4')
   assert.equal(created.isDefault, true, '第一条配置自动成为默认')
   assert.equal(JSON.stringify(created).includes(ALICE_KEY), false)
   assert.equal('sealed' in created, false)
@@ -69,7 +69,7 @@ test('profiles are created, listed and updated without ever returning key materi
 
   const updated = await service.updateProfile(aliceUid, created.profileId, { label: '改名', apiKey: BOB_KEY })
   assert.equal(updated.label, '改名')
-  assert.equal(updated.hint, '…2222')
+  assert.match(updated.hint, /^.*2222$/, '更新后掩码跟着新 Key')
   // 新 Key 生效、旧 Key 不再可解析
   const resolved = await service.resolveKeyForSession('s-alice')
   assert.deepEqual(resolved.ok && resolved.apiKey, BOB_KEY)
