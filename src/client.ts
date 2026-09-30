@@ -220,6 +220,9 @@
 			'.dshua .toolbar{display:flex;flex-wrap:wrap;gap:5px 10px;align-items:flex-end}',
 			'.dshua .actions{display:flex;flex-wrap:wrap;gap:5px 10px;margin:10px 0 0}',
 			'.dshua .field{display:flex;flex-direction:column;margin:0 0 10px;min-width:160px}',
+			'.dshua .fields{display:flex;flex-direction:column}',
+			'.dshua .fields .field{width:100%}',
+			'.dshua .fields input{width:100%}',
 			'.dshua .field > label{margin:0 0 4px;font-size:12px;color:var(--dsw-alias-label-secondary)}',
 			'.dshua .muted{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:20px}',
 			'.dshua input,.dshua select{min-width:120px}',
@@ -899,6 +902,11 @@
 			return React.createElement('div', { className: 'dshua' }, cards, renderStepUp())
 		}
 
+		/** 统一把 RPC/异常转成可读文案。 */
+		function errText(e: any): string {
+			return String((e && (e.message || e.error || e.code)) || e)
+		}
+
 		// ============ 模型（按用户；v0.7.0） ============
 		// 与出厂「模型」页**同名同区**（内容以 priority:-1 胜出），并把重复的导航行收敛为一个。
 		// 排版：配置用**表格**呈现，功能按钮只保留**一组**——「查余额」遍历该用户全部配置。
@@ -931,20 +939,22 @@
 				})
 			}
 			// 单组按钮：一次遍历查询该用户全部配置的余额，逐行回填
+			// 单组按钮：一次请求查询全部配置的余额（服务端在请求内顺序查询，整批只节流一次）
 			function queryAllBalances(): void {
 				setState(function (prev: any) { return { ...prev, busy: 'balance', error: '' } })
-				var next: Record<string, string> = {}
-				var jobs = state.profiles.map(function (p: any) {
-					var id = String(p.profileId)
-					var body = p.source === 'shared' ? {} : { profileId: id }
-					return rpc('balanceQuery', body).then(function (j) {
-						var b = j.balance || {}
-						next[id] = (b.currency || 'CNY') + ' ' + String(b.total)
-					}).catch(function (e) { next[id] = errText(e) })
-				})
-				Promise.all(jobs).then(function () {
+				rpc('balanceQueryAll', {}).then(function (j) {
+					var results = j.results || {}
+					var next: Record<string, string> = {}
+					Object.keys(results).forEach(function (id) {
+						var row = results[id] || {}
+						next[id] = row.error !== undefined
+							? (row.error === 'rate-limited' ? '稍后重试' : row.error === 'no-profile' ? '未选择配置' : '不可用')
+							: ((row.currency || 'CNY') + ' ' + String(row.total))
+					})
 					setBalances(next)
 					setState(function (prev: any) { return { ...prev, busy: '' } })
+				}).catch(function (e) {
+					setState(function (prev: any) { return { ...prev, busy: '', error: errText(e) } })
 				})
 			}
 			function selectedProfile(): any {
@@ -1025,7 +1035,7 @@
 			// —— 新增配置（放在表格下方，占满一行便于填写）——
 			children.push(React.createElement('div', { key: 'add-title', style: { fontWeight: 600, margin: '14px 0 6px' } }, '添加我自己的配置'))
 			// 字段用 label + 输入框（与「用户管理」一致：12px 标题在左上角，纵向间距 ≥10px）
-			children.push(React.createElement('div', { key: 'add', className: 'toolbar', style: { alignItems: 'flex-end' } },
+			children.push(React.createElement('div', { key: 'add', className: 'fields' },
 				React.createElement('div', { className: 'field' },
 					React.createElement('label', null, '名称'),
 					React.createElement('input', { placeholder: '例如：我的 DeepSeek', value: form.label, onChange: function (e: any) { setForm({ ...form, label: e.target.value }) } })),

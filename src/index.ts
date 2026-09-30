@@ -401,7 +401,15 @@ export function apply(ctx: CordisContext): void {
     // ============ 配置常量 ============
     // 会话密钥注册表：KEK 只属于本次挂载的会话，绝不跨挂载泄漏（每次 apply 都是新的）。
     const kekRegistry = new KekRegistry()
-    const COOKIE_NAME = 'dsh_auth'
+    // 会话 Cookie 名必须**按实例唯一**：浏览器的 Cookie 作用域不含端口，同一台机器上两个 DSH 实例
+// （例如 127.0.0.1:3202 与 :3080）会共用同名 Cookie，后登录的实例会覆盖前一个，表现为"互相踢下线"。
+// 以 DSH_HOME（每个实例一个）做短哈希后缀：实例内稳定（重启不掉线），实例之间互不干扰。
+const COOKIE_NAME = 'dsh_auth_' + (() => {
+  const seed = process.env.DSH_HOME ?? process.cwd()
+  let hash = 0
+  for (let i = 0; i < seed.length; i += 1) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0
+  return hash.toString(36)
+})()
     const SCOPE = 'dsh-auth'
     const SESSION_TTL_MS = 12 * 60 * 60 * 1000 // 会话 12 小时，滑动续期
     const SESSION_SWEEP_MS = 5 * 60 * 1000
@@ -2425,6 +2433,13 @@ export function apply(ctx: CordisContext): void {
         case 'shareUsage':
           await runProfile(async (service, uid) => {
             sendJson(res, 200, { ok: true, usage: await service.usageFor(uid) })
+          })
+          return
+        case 'balanceQueryAll':
+          await runProfile(async (service, uid) => {
+            const results = await service.balanceAll(uid)
+            if ('error' in results) { sendJson(res, 429, { error: results.error }); return }
+            sendJson(res, 200, { ok: true, results })
           })
           return
         case 'balanceQuery':

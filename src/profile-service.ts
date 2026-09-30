@@ -85,6 +85,9 @@ const ownMeta = (profile: PrivateProfile | Omit<PrivateProfile, 'sealed' | 'wrap
 export class ProfileService {
   private readonly balanceCache = new Map<string, BalanceResult>()
   private readonly lastBalanceAt = new Map<string, number>()
+
+  /** 批量查询的每用户节流（整批一次，而不是每条一次）。 */
+  private readonly lastBalanceAllAt = new Map<string, number>()
   private readonly tokenByUid = new Map<string, string>()
   private master?: Uint8Array<ArrayBuffer>
 
@@ -417,7 +420,9 @@ export class ProfileService {
 
   // ---- 余额 ----
 
-  async balanceOf(uid: string, profileId?: string): Promise<BalanceResult | { error: 'rate-limited' | 'unavailable' | 'no-profile' }> {
+  async balanceOf(
+    uid: string, profileId?: string, options?: { bulk?: boolean },
+  ): Promise<BalanceResult | { error: 'rate-limited' | 'unavailable' | 'no-profile' }> {
     const fetcher = this.deps.balanceFetcher
     if (fetcher === undefined) return { error: 'unavailable' }
     const doc = await this.readDefault(uid)
@@ -425,16 +430,36 @@ export class ProfileService {
     const cacheKey = doc.share !== undefined ? `${doc.share.ownerUid}/${doc.share.profileId}` : `${uid}/${profileId ?? doc.profileId ?? ''}`
     const cached = this.balanceCache.get(cacheKey)
     if (cached !== undefined && now - cached.fetchedAt < BALANCE_TTL_MS) return cached
-    if (now - (this.lastBalanceAt.get(uid) ?? 0) < BALANCE_MIN_INTERVAL_MS) return { error: 'rate-limited' }
+    if (options?.bulk !== true && now - (this.lastBalanceAt.get(uid) ?? 0) < BALANCE_MIN_INTERVAL_MS) return { error: 'rate-limited' }
 
     const resolved = await this.apiKeyFor(uid, doc, profileId)
     if (resolved === undefined) return { error: 'no-profile' }
-    this.lastBalanceAt.set(uid, now)
+    if (options?.bulk !== true) this.lastBalanceAt.set(uid, now)
     const result = await fetcher(resolved.apiKey, resolved.baseUrl)
     if (result === null) return { error: 'unavailable' }
     const stamped: BalanceResult = { ...result, fetchedAt: now }
     this.balanceCache.set(cacheKey, stamped)
     return stamped
+  }
+
+  /**
+   * 批量余额：界面上的「查余额（全部配置）」走这里——一次请求内**顺序**查询该用户全部配置，
+   * 整批只做一次每用户节流（否则逐条调用会全部撞上单条最小间隔，看起来就是"查余额失效"）。
+   */
+  async balanceAll(uid: string): Promise<Record<string, BalanceResult | { error: string }> | { error: 'rate-limited' }> {
+    const now = this.now()
+    if (now - (this.lastBalanceAllAt.get(uid) ?? 0) < BALANCE_MIN_INTERVAL_MS) return { error: 'rate-limited' }
+    this.lastBalanceAllAt.set(uid, now)
+    const profiles = await this.listProfiles(uid)
+    const results: Record<string, BalanceResult | { error: string }> = {}
+    for (const meta of profiles) {
+      const id = String(meta.profileId)
+      const one = await this.balanceOf(uid, meta.source === 'shared' ? undefined : id, { bulk: true })
+      results[id] = one
+      // 依次请求，给上游留出间隔（同时避免被上游限流）
+      await new Promise(resolve => setTimeout(resolve, 150))
+    }
+    return results
   }
 
   /** 解析某条配置的 Key 与它适用的 baseURL（余额/测试连接都走这里，保证口径一致）。 */
