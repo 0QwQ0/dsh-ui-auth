@@ -1009,6 +1009,20 @@
 			return String((e && (e.message || e.error || e.code)) || e)
 		}
 
+		// ============ 账户页对普通用户不可用（Q7） ============
+		// 原生账户页显示的是**部署者**的 DeepSeek 账号、余额与充值入口，并允许登录/登出——
+		// 那会把整个部署从 DeepSeek 断开。因此对普通用户只呈现说明，服务端同样拒绝 account/*。
+		// 用户自己要看的余额在【模型与密钥】里按各自的配置查询（只返回数字）。
+		function AccountHiddenPage() {
+			return React.createElement('div', { className: 'dshua' },
+				React.createElement('div', { className: 'card' },
+					React.createElement('h2', null, '账户'),
+					React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 14, lineHeight: '22px' } },
+						'此页管理的是部署者的 DeepSeek 账号（登录、余额与充值），仅部署者可访问。',
+						React.createElement('br', null),
+						'你自己的模型与 API Key、以及各自配置可查的余额，请到【模型与密钥】。')))
+		}
+
 		// ============ 分享管理（管理员；v0.7.0） ============
 		// 管理员把自己的模型分享给指定用户：被授权者可用、可看余额，但看不到 Key；
 		// 同时展示每条分享的用量（谁用了多少次、多少 token）——用量不含任何 Key 材料。
@@ -1168,6 +1182,15 @@
 						return slots!.register(
 							{ name: 'settings.section', id: 'auth-shares', order: 31, label: function () { return '分享管理' } },
 							function () { return React.createElement(SharesPage) },
+						)
+					})
+				}
+				// 普通用户：账户页替换为说明（Q7）——原生账户页读写的是**部署者**的 DeepSeek 账号与钱包
+				if (j.me !== undefined && j.me.role !== 'admin') {
+					slots!.inject('settings.section', function () {
+						return slots!.register(
+							{ name: 'settings.section', id: 'account', order: -10, priority: -1, label: function () { return '账户' } },
+							function () { return React.createElement(AccountHiddenPage) },
 						)
 					})
 				}
