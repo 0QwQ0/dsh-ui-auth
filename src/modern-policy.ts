@@ -60,6 +60,17 @@ const WORKSPACE_BY_ID = new Set(['rename', 'delete', 'insertBefore', 'insertSess
 const SESSION_READ = new Set(['list', 'search', 'modelCatalog', 'canOpenWorkspacePath'])
 /** Flat read-only global metadata an ordinary user may see (redacted by the host). */
 const SHARED_READ = new Set(['settings/describe', 'llm/listProviders', 'llm/listConfigurableProviders'])
+/** Plugin-manager reads the settings page performs on load; its write verbs stay administrator-only. */
+const PLUGIN_MANAGER_READ = new Set(['listPlugins', 'listBundles', 'registries', 'inspect'])
+/** Interactive question endpoints: agent-scoped or session-scoped, both are ownership proofs. */
+const SESSION_INTERACTIVE = new Set(['userQuestions/answer', 'userQuestions/attachWait'])
+/** Office-to-PDF carries positional args `(workspaceFileScopeId, path, priority)`. */
+const OFFICE_TO_PDF_SCOPE_INDEX = 0
+
+/** The raw `args` value of a Remote payload (an object, or a positional array). */
+function rawArgs(payload: unknown): unknown {
+  return object(payload) ? payload.args : undefined
+}
 
 /** The single `args` object of a Remote payload, or undefined when malformed. */
 export function remoteArgs(payload: unknown): JsonObject | undefined {
@@ -121,7 +132,11 @@ export function createModernPolicy(owners: OwnershipLookup): ModernPolicy {
     session,
     workspace,
     async authorize(principal, endpoint, payload, stream = false) {
-      const args = remoteArgs(payload)
+      // Remote 入参有两种线上形态：命名对象（`{args:{...}}`）与位置数组（如 officeToPdf 的
+      // `(workspaceFileScopeId, path, priority)`）。数组形态按空对象继续，由对应规则自行读取位置参数；
+      // 其它端点拿到空对象后仍会因缺少归属证据而被拒。
+      const raw = rawArgs(payload)
+      const args = remoteArgs(payload) ?? (Array.isArray(raw) ? {} : undefined)
       if (args === undefined) return false
       if (principal.role === 'admin') return true
       const request = requestOf(args)
@@ -140,6 +155,34 @@ export function createModernPolicy(owners: OwnershipLookup): ModernPolicy {
         return false
       }
       if (SHARED_READ.has(endpoint)) return true
+      // 0.2.0 新增的插件管理器页：普通用户只读（listPlugins/listBundles/registries/inspect）——
+      // 与 0.1.5 的 pluginInventory/list 同理，被拒会让整页显示失败；安装/卸载/启停与
+      // pluginRegistryProbe/* 是部署方能力，仍未登记 → 默认拒绝。
+      if (endpoint.startsWith('pluginManager/')) {
+        return PLUGIN_MANAGER_READ.has(endpoint.slice('pluginManager/'.length))
+      }
+      // 权限预设目录是只读元数据（写入走 settings/mutate，仍限管理员）。
+      if (endpoint === 'permissionPresets/catalog') return true
+      // 交互式提问（作答 / 等待）本质属于某个会话：agentId 或 sessionId 任一属于请求者即放行。
+      if (SESSION_INTERACTIVE.has(endpoint)) {
+        return agent(principal, args) || session(principal, request.sessionId ?? args.sessionId)
+      }
+      // 文档预览（Q8：用户 + 会话 + 工作区三重归属）。宿主以 workspaceFileScope（SessionId）
+      // 解析路径，所以该 scope 必须属于请求者；入参若另给 workspaceId，其归属也必须一致。
+      // 缺少可证明归属的 scope 时拒绝（fail-closed），不做"仅凭 path 放行"的推断。
+      if (endpoint.startsWith('officeToPdf/')) {
+        const scope = Array.isArray(raw) ? raw[OFFICE_TO_PDF_SCOPE_INDEX] : args.workspaceFileScopeId
+        if (!session(principal, scope)) return false
+        const workspaceId = Array.isArray(raw) ? undefined : args.workspaceId
+        return workspaceId === undefined || workspace(principal, workspaceId)
+      }
+      // open-in-app 的应用清单按会话归属（等价于按用户）。
+      if (endpoint === 'session/workspacePathApplications') {
+        return session(principal, request.sessionId ?? args.sessionId)
+      }
+      // 账户页（DeepSeek 登录 / 余额 / 充值）读的是**部署者**的账号与钱包，普通用户整体不开放
+      // （Q7）；余额改由本插件的 balanceQuery 按用户自己的配置提供。此处显式拒绝以便审计。
+      if (namespace === 'account') return false
       // Agent 预设：读清单与"为本次会话选择预设"是普通用户的正常能力——设置面板的【Agent 预设】
       // 页在加载时先调 agentPresets/list（被拒会让整页显示「无法加载 Agent 预设」），新建会话的
       // 预设选择器同样依赖它。read/select 是 agent 作用域（wire 名 agentId），按会话属主校验。

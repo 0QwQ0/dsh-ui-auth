@@ -181,3 +181,52 @@ test('unattributable forwarded events are not delivered to ordinary users', () =
   assert.deepEqual(policy.frame(alice, '$events', ready, correlation), ready)
   assert.equal(correlation.clientId, 'c1')
 })
+
+// ---- v0.7.0 / DSH 0.2.0 新增面（WP2）----
+
+test('0.2.0 plugin manager: the page reads are open, every write verb stays admin-only', async () => {
+  // 插件管理器页在加载时调 listPlugins/listBundles/registries/inspect；被拒会让整页失败。
+  for (const method of ['listPlugins', 'listBundles', 'registries', 'inspect']) {
+    assert.equal(await policy.authorize(alice, `pluginManager/${method}`, { args: {} }), true)
+    assert.equal(await policy.authorize(alice, `pluginManager/${method}`, { args: {} }, false), true)
+  }
+  // 安装/卸载/启停是部署方能力；凭据探测走网络，同样不开放。
+  for (const method of ['installBundle', 'removeBundle', 'setPluginEnabled', 'setBundleEnabled', 'cancelInstall', 'waitForInstall']) {
+    assert.equal(await policy.authorize(alice, `pluginManager/${method}`, { args: {} }), false)
+  }
+  assert.equal(await policy.authorize(alice, 'pluginRegistryProbe/fastest', { args: {} }), false)
+  assert.equal(await policy.authorize(alice, 'pluginManager/futureWrite', { args: {} }), false)
+  assert.equal(await policy.authorize(alice, 'permissionPresets/catalog', { args: {} }), true)
+  assert.equal(await policy.authorize(alice, 'permissionPresets/set', { args: {} }), false)
+})
+
+test('question answering is ownership-scoped; the deployment account page stays closed', async () => {
+  for (const method of ['userQuestions/answer', 'userQuestions/attachWait']) {
+    assert.equal(await policy.authorize(alice, method, { args: { agentId: 'a' } }), true)
+    assert.equal(await policy.authorize(alice, method, { args: { agentId: 'b' } }), false)
+    assert.equal(await policy.authorize(alice, method, { args: { sessionId: 'a' } }), true)
+    assert.equal(await policy.authorize(alice, method, { args: { sessionId: 'b' } }), false)
+    assert.equal(await policy.authorize(alice, method, { args: {} }), false)
+  }
+  // Q7：原生账户页读写的是部署者的 DeepSeek 账号与钱包，普通用户一律拒绝（余额走 balanceQuery）。
+  for (const method of ['account/getProfile', 'account/getBalance', 'account/watch', 'account/signOut', 'account/startSignIn', 'account/ackBonusNotified']) {
+    assert.equal(await policy.authorize(alice, method, { args: {} }), false)
+  }
+  // open-in-app 的应用清单按会话归属；账户页的模型初始化不属于用户能力。
+  assert.equal(await policy.authorize(alice, 'session/workspacePathApplications', { args: { sessionId: 'a' } }), true)
+  assert.equal(await policy.authorize(alice, 'session/workspacePathApplications', { args: { sessionId: 'b' } }), false)
+  assert.equal(await policy.authorize(alice, 'session/initializeDefaultModel', { args: { sessionId: 'a' } }), false)
+})
+
+test('officeToPdf requires a provable scope (Q8: user + session + workspace)', async () => {
+  // 位置参数形态：(workspaceFileScopeId, path, priority)
+  assert.equal(await policy.authorize(alice, 'officeToPdf/render', { args: ['a', 'doc.docx', 'normal'] }), true)
+  assert.equal(await policy.authorize(alice, 'officeToPdf/render', { args: ['b', 'doc.docx', 'normal'] }), false)
+  assert.equal(await policy.authorize(alice, 'officeToPdf/render', { args: ['doc.docx'] }), false) // scope 缺失 → 拒绝
+  assert.equal(await policy.authorize(alice, 'officeToPdf/generation', { args: {} }), false)
+  assert.equal(await policy.authorize(alice, 'officeToPdf/generation', { args: [] }), false)
+  // 命名参数形态：另给 workspaceId 时必须同属请求者，否则拒绝。
+  assert.equal(await policy.authorize(alice, 'officeToPdf/generation', { args: { workspaceFileScopeId: 'a', workspaceId: 'wa' } }), true)
+  assert.equal(await policy.authorize(alice, 'officeToPdf/generation', { args: { workspaceFileScopeId: 'a', workspaceId: 'wb' } }), false)
+  assert.equal(await policy.authorize(alice, 'officeToPdf/render', { args: { workspaceFileScopeId: 'a' } }), true)
+})
