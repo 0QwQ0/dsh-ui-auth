@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { WebSocketServer, WebSocket } from 'ws'
 import { createModernPolicy, remoteArgs, object, nonempty } from './modern-policy.js'
+import type { ModelEntitlement } from './modern-policy.js'
 import type { JsonObject, ModernPolicy, Principal, StreamCorrelation } from './modern-policy.js'
 
 /**
@@ -57,6 +58,11 @@ export interface ModernAuth {
   sessionExists(id: string): Promise<boolean>
   claimSession(id: string, username: string): Promise<void>
   claimWorkspace(id: string, username: string): Promise<void>
+  /**
+   * R2：按登录用户返回模型授权范围（provider + 逐模型）。返回 undefined 表示不裁剪；
+   * 管理员在策略层直接绕过，不会走到这里。
+   */
+  entitlement?(principal: Principal): Promise<ModelEntitlement | undefined> | ModelEntitlement | undefined
 }
 
 /** The seam downstream plugins consume through `ctx.get('uiAuth')`. */
@@ -217,7 +223,9 @@ function errorMessage(error: unknown): string {
 }
 
 export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth): ModernGateway {
-  const policy: ModernPolicy = createModernPolicy(auth)
+  const policy: ModernPolicy = createModernPolicy(auth, {
+    ...(auth.entitlement === undefined ? {} : { entitlement: auth.entitlement }),
+  })
   const policies = new Map<string, PolicyRules>()
   const principalByRequest = new WeakMap<IncomingMessage, Principal>()
   const correlations = new Set<StreamCorrelation>()

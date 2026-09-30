@@ -2729,6 +2729,20 @@ export function apply(ctx: CordisContext): void {
           },
           claimSession: setSessionOwner,
           claimWorkspace: setWorkspaceOwner,
+          // R2：普通用户可见的模型 = 自有配置 + 收到的分享。管理员由策略层直接绕过。
+          // 从未配置任何模型的用户得到空授权（目录为空、切换模型被拒）——这就是 Q2 的"阻断使用"。
+          // 这里只读元数据（provider/model），不需要解锁，也不接触任何 Key。
+          async entitlement(principal: Principal) {
+            const service = profileService()
+            if (service === undefined || store === null) return undefined
+            const uid = await new ProfileStore(store).uidOf(principal.username)
+            if (uid === undefined) return { providers: [], models: [] }
+            const profiles = await service.listProfiles(uid)
+            return {
+              providers: [...new Set(profiles.map(profile => profile.provider))],
+              models: profiles.map(profile => ({ provider: profile.provider, model: profile.model })),
+            }
+          },
         })
     server.removeAllListeners('request')
     server.removeAllListeners('upgrade')
