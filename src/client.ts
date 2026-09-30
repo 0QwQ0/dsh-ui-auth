@@ -1009,6 +1009,36 @@
 			return String((e && (e.message || e.error || e.code)) || e)
 		}
 
+		// ============ 插件管理器：普通用户只读呈现（v0.7.0） ============
+		// 服务端已对 pluginManager 的安装/卸载/启停与 pluginRegistryProbe 一律 403（安全边界在此）；
+		// 这一层只解决"点了才发现被拒"的体验：把出厂插件管理器里的**动作按钮**标记为不可用并给出说明。
+		// 关键约束：只作用于**非 `.dshua` 区域**——我们自己注入的面板里也有「删除/添加」等同名按钮，
+		// 绝不能误伤（这也是为什么按文本匹配的同时必须排除插件自己的 DOM）。
+		var PLUGIN_MANAGER_ACTIONS = ['安装', '卸载', '启用', '停用', '禁用', '更新', '升级', '重载',
+			'Install', 'Uninstall', 'Enable', 'Disable', 'Update', 'Reload']
+		function enforcePluginManagerReadOnly(): void {
+			if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return
+			var mark = function (): void {
+				var nodes = document.querySelectorAll('button, [role=button]')
+				for (var i = 0; i < nodes.length; i++) {
+					var element = nodes[i] as HTMLElement
+					if (element.closest('.dshua') !== null) continue
+					if (element.dataset.dshuaReadonly === '1') continue
+					var label = (element.textContent || '').trim()
+					if (PLUGIN_MANAGER_ACTIONS.indexOf(label) === -1) continue
+					element.dataset.dshuaReadonly = '1'
+					element.setAttribute('disabled', 'disabled')
+					element.setAttribute('aria-disabled', 'true')
+					element.setAttribute('title', '仅部署者可以安装、卸载或启停插件（服务端会拒绝该操作）')
+					element.style.opacity = '0.5'
+					element.style.pointerEvents = 'none'
+				}
+			}
+			mark()
+			// 出厂插件管理器是异步渲染的，观察增量节点；有界（同一节点只处理一次）。
+			new MutationObserver(mark).observe(document.body, { childList: true, subtree: true })
+		}
+
 		// ============ 账户页对普通用户不可用（Q7） ============
 		// 原生账户页显示的是**部署者**的 DeepSeek 账号、余额与充值入口，并允许登录/登出——
 		// 那会把整个部署从 DeepSeek 断开。因此对普通用户只呈现说明，服务端同样拒绝 account/*。
@@ -1193,6 +1223,10 @@
 							function () { return React.createElement(AccountHiddenPage) },
 						)
 					})
+				}
+				// 普通用户：插件管理器只读呈现（服务端同样拒绝安装/卸载/启停）
+				if (j.me !== undefined && j.me.role !== 'admin') {
+					enforcePluginManagerReadOnly()
 				}
 				// 登录后：既没有 TOTP 也没有通行密钥且未永久忽略 → 弹窗提醒（管理员同样提醒）
 				if (j.me !== undefined && j.me.totpEnabled !== true && (j.me.passkeyCount || 0) === 0 && j.me.totpIgnore !== true) {

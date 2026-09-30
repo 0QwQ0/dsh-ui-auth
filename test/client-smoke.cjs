@@ -89,6 +89,8 @@ const tick = () => new Promise((r) => setTimeout(r, 20))
   await tick()
   check('user: auth-users registered', s2.recorded.some((r) => r.opts.id === 'auth-users'))
   check('user: auth-shares NOT registered (admin-only)', !s2.recorded.some((r) => r.opts.id === 'auth-shares'))
+  check('user: plugin-manager read-only guard present', code.includes('dshuaReadonly') && code.includes('仅部署者可以安装'))
+  check('user: read-only guard skips the plugin\'s own DOM (.dshua)', code.includes('closest(".dshua")'))
   const modelsReg = s2.recorded.find((r) => r.opts.id === 'models')
   check('user: models lock registered', modelsReg !== undefined)
   if (modelsReg !== undefined) {
