@@ -223,11 +223,12 @@
 			'.dshua .fields{display:flex;flex-direction:column}',
 			'.dshua .fields .field{width:100%}',
 			'.dshua .fields input{width:100%}',
+			'.dshua .field.compact input{padding:4px 10px;font-size:12px;height:75%;min-height:24px}',
 			'.dshua input.pw-ok,input.pw-ok:disabled{border-color:#2ecc71;box-shadow:0 0 6px 2px rgba(46,204,113,.35)}',
 			'.dshua input.pw-warn,input.pw-warn:disabled{border-color:#f1c40f;box-shadow:0 0 6px 2px rgba(241,196,15,.35)}',
 			'.dshua input.pw-bad,input.pw-bad:disabled{border-color:#e74c3c;box-shadow:0 0 6px 2px rgba(231,76,60,.35)}',
 			'.dshua input.locked,input.locked:disabled{background:var(--dsw-alias-interactive-bg-hover);opacity:.72}',
-			'.dshua .pw-hint{font-size:12px;color:var(--dsw-alias-label-secondary);margin:-2px 0 8px}',
+			'.dshua .pw-hint{font-size:12px;color:var(--dsw-alias-label-secondary);margin:1px 0 8px}',
 			'.dshua .field > label{margin:0 0 4px;font-size:12px;color:var(--dsw-alias-label-secondary)}',
 			'.dshua .muted{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:20px}',
 			'.dshua input,.dshua select{min-width:120px}',
@@ -973,6 +974,8 @@
 			var pw = React.useState(''); var password = pw[0], setPassword = pw[1]
 			var fm = React.useState({ label: '', model: 'deepseek-chat', baseUrl: '', apiKey: '' })
 			var form = fm[0], setForm = fm[1]
+			var kt = React.useState({ busy: false, result: '' })
+			var keyTest = kt[0], setKeyTest = kt[1]
 			var bl = React.useState({} as Record<string, string>)
 			var balances = bl[0], setBalances = bl[1]
 
@@ -1014,6 +1017,17 @@
 					setState(function (prev: any) { return { ...prev, busy: '', error: errText(e) } })
 				})
 			}
+			// 校验当前填写的 Key 是否连通（后端 profileTestKey：只回结论与余额数字，不回显 Key）
+			function checkKeyValidity(): void {
+				setKeyTest({ busy: true, result: '' })
+				rpc('profileTestKey', { apiKey: form.apiKey, baseUrl: form.baseUrl }).then(function (j) {
+					var b = j.balance || {}
+					setKeyTest({ busy: false, result: '✔ 连通可用，余额 ' + (b.currency || 'CNY') + ' ' + String(b.total) })
+				}).catch(function (e) {
+					setKeyTest({ busy: false, result: '✘ ' + errText(e) })
+				})
+			}
+
 			function selectedProfile(): any {
 				return state.profiles.filter(function (p: any) { return String(p.profileId) === state.selected })[0]
 			}
@@ -1028,18 +1042,21 @@
 
 			// —— 单组功能按钮 ——
 			var toolbar: any[] = []
+			// 口令输入框独占一排（紧凑高度），解锁按钮放到下一排
 			if (state.loaded && !state.unlocked) {
-				toolbar.push(React.createElement('div', { key: 'pw-field', className: 'field' },
-					React.createElement('label', null, '当前登录口令'),
-				React.createElement('input', {
-					key: 'pw', type: 'password', placeholder: '用于解锁私人密钥（不保存）', value: password,
-					'aria-label': '当前登录口令', style: { minWidth: 220 },
-					onChange: function (e: any) { setPassword(e.target.value) },
-				})))
-				toolbar.push(React.createElement('button', {
-					key: 'unlock', disabled: password === '',
-					onClick: function () { act('profileUnlock', { password: password }); setPassword('') },
-				}, '解锁'))
+				children.push(React.createElement('div', { key: 'pw-row', className: 'fields' },
+					React.createElement('div', { className: 'field compact' },
+						React.createElement('label', null, '当前登录口令'),
+						React.createElement('input', {
+							type: 'password', placeholder: '用于解锁私人密钥（不保存）', value: password,
+							'aria-label': '当前登录口令',
+							onChange: function (e: any) { setPassword(e.target.value) },
+						}))))
+				children.push(React.createElement('div', { key: 'pw-actions', className: 'actions' },
+					React.createElement('button', {
+						disabled: password === '',
+						onClick: function () { act('profileUnlock', { password: password }); setPassword('') },
+					}, '解锁')))
 			}
 			toolbar.push(React.createElement('button', {
 				key: 'balance', disabled: state.profiles.length === 0 || state.busy === 'balance',
@@ -1107,12 +1124,19 @@
 					React.createElement('input', { type: 'password', placeholder: 'sk-…', value: form.apiKey, onChange: function (e: any) { setForm({ ...form, apiKey: e.target.value }) } })),
 				React.createElement('div', { className: 'actions', style: { margin: '0 0 10px' } },
 					React.createElement('button', {
+						disabled: form.apiKey === '' || keyTest.busy,
+						onClick: checkKeyValidity,
+					}, keyTest.busy ? '校验中…' : '校验有效性'),
+					React.createElement('button', {
 						disabled: form.model === '' || form.apiKey === '',
 						onClick: function () {
 							act('profileCreate', { label: form.label, provider: 'deepseek', model: form.model, baseUrl: form.baseUrl, apiKey: form.apiKey })
 							setForm({ label: '', model: 'deepseek-chat', baseUrl: '', apiKey: '' })
 						},
 					}, '添加'))))
+			if (keyTest.result !== '') {
+				children.push(React.createElement('div', { key: 'keytest', className: 'pw-hint' }, keyTest.result))
+			}
 			return React.createElement('div', { className: 'dshua' }, React.createElement('div', { className: 'card' }, children))
 		}
 
