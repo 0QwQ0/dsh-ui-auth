@@ -223,6 +223,11 @@
 			'.dshua .fields{display:flex;flex-direction:column}',
 			'.dshua .fields .field{width:100%}',
 			'.dshua .fields input{width:100%}',
+			'.dshua input.pw-ok,input.pw-ok:disabled{border-color:#2ecc71;box-shadow:0 0 6px 2px rgba(46,204,113,.35)}',
+			'.dshua input.pw-warn,input.pw-warn:disabled{border-color:#f1c40f;box-shadow:0 0 6px 2px rgba(241,196,15,.35)}',
+			'.dshua input.pw-bad,input.pw-bad:disabled{border-color:#e74c3c;box-shadow:0 0 6px 2px rgba(231,76,60,.35)}',
+			'.dshua input.locked,input.locked:disabled{background:var(--dsw-alias-interactive-bg-hover);opacity:.72}',
+			'.dshua .pw-hint{font-size:12px;color:var(--dsw-alias-label-secondary);margin:-2px 0 8px}',
 			'.dshua .field > label{margin:0 0 4px;font-size:12px;color:var(--dsw-alias-label-secondary)}',
 			'.dshua .muted{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:20px}',
 			'.dshua input,.dshua select{min-width:120px}',
@@ -279,7 +284,24 @@
 			var busyS = _s(false), busy = busyS[0], setBusy = busyS[1]
 			var pDisplayS = _s(''), pDisplay = pDisplayS[0], setPDisplay = pDisplayS[1]
 			var pEmailS = _s(''), pEmail = pEmailS[0], setPEmail = pEmailS[1]
-			var oldPwS = _s(''), oldPw = oldPwS[0], setOldPw = oldPwS[1]
+			/** 密码强度：bad（不满足）/ warn（刚满足长度+两类）/ ok（≥12 位且三类以上）。 */
+		function passwordLevel(value: string): 'bad' | 'warn' | 'ok' {
+			var classes = 0
+			if (/[a-z]/.test(value)) classes += 1
+			if (/[A-Z]/.test(value)) classes += 1
+			if (/[0-9]/.test(value)) classes += 1
+			if (/[^A-Za-z0-9]/.test(value)) classes += 1
+			if (value.length < 8 || classes < 2) return 'bad'
+			if (value.length >= 12 && classes >= 3) return 'ok'
+			return 'warn'
+		}
+		function levelText(level: string): string {
+			return level === 'ok' ? '强度很高'
+				: level === 'warn' ? '刚满足要求（建议再加长或混合更多字符类型）'
+					: '不满足要求（至少 8 位且含两类字符）'
+		}
+		var oldPwS = _s(''), oldPw = oldPwS[0], setOldPw = oldPwS[1]
+		var oldCheckS = _s('idle' as 'idle' | 'ok' | 'bad'), oldCheck = oldCheckS[0], setOldCheck = oldCheckS[1]
 			var newPwS = _s(''), newPw = newPwS[0], setNewPw = newPwS[1]
 			var newPw2S = _s(''), newPw2 = newPw2S[0], setNewPw2 = newPw2S[1]
 			var usersS = _s([]), users = usersS[0], setUsers = usersS[1]
@@ -576,6 +598,13 @@
 				run(function () { return rpc('updateProfile', { displayName: pDisplay, email: pEmail }).then(function (j: MeResult) { setMe(j.me) }) }, '个人信息已保存')
 			}
 
+			/** 当前密码失焦校验：通过 → 绿框 + 解锁下面两个输入框；失败 → 红框 + 保持锁定。 */
+			function checkCurrentPassword() {
+				if (oldPw === '') { setOldCheck('idle'); return }
+				rpc('verifyPassword', { password: oldPw }).then(function () { setOldCheck('ok') })
+					.catch(function () { setOldCheck('bad') })
+			}
+
 			function changePassword() {
 				if (newPw.length < 8) { setErr('新密码至少 8 位且含两种及以上字符类型（大小写字母/数字/符号）'); return }
 				if (newPw !== newPw2) { setErr('两次输入的新密码不一致'); return }
@@ -648,16 +677,44 @@
 					React.createElement('button', { className: 'ghost', onClick: logout }, '退出登录')),
 			))
 
+			var newLevel = passwordLevel(newPw)
+			var unlocked = oldCheck === 'ok'
 			cards.push(React.createElement('div', { className: 'card', key: 'password' },
 				React.createElement('h2', null, '修改密码'),
 				React.createElement('label', null, '当前密码'),
-				React.createElement('input', { type: 'password', value: oldPw, onChange: function (e: ChangeEventLike) { setOldPw(e.target.value) }, autoComplete: 'current-password' }),
+				React.createElement('input', {
+					type: 'password', value: oldPw, autoComplete: 'current-password',
+					className: oldCheck === 'ok' ? 'pw-ok' : oldCheck === 'bad' ? 'pw-bad' : '',
+					onChange: function (e: ChangeEventLike) { setOldPw(e.target.value); setOldCheck('idle') },
+					onBlur: checkCurrentPassword,
+				}),
+				React.createElement('div', { className: 'pw-hint' },
+					oldCheck === 'ok' ? '当前密码正确，已解锁下面的输入框'
+						: oldCheck === 'bad' ? '当前密码不正确，下面的输入框保持锁定'
+							: '离开此输入框时会自动校验；校验通过前下面两个输入框锁定'),
 				React.createElement('label', null, '新密码（至少 8 位，含两种字符类型）'),
-				React.createElement('input', { type: 'password', value: newPw, onChange: function (e: ChangeEventLike) { setNewPw(e.target.value) }, autoComplete: 'new-password' }),
+				React.createElement('input', {
+					type: 'password', value: newPw, autoComplete: 'new-password',
+					disabled: !unlocked,
+					className: !unlocked ? 'locked' : newPw === '' ? '' : 'pw-' + newLevel,
+					onChange: function (e: ChangeEventLike) { setNewPw(e.target.value) },
+				}),
+				unlocked && newPw !== '' ? React.createElement('div', { className: 'pw-hint' }, '密码强度：' + levelText(newLevel)) : null,
 				React.createElement('label', null, '确认新密码'),
-				React.createElement('input', { type: 'password', value: newPw2, onChange: function (e: ChangeEventLike) { setNewPw2(e.target.value) }, autoComplete: 'new-password' }),
+				React.createElement('input', {
+					type: 'password', value: newPw2, autoComplete: 'new-password',
+					disabled: !unlocked || newLevel === 'bad',
+					className: !unlocked || newLevel === 'bad' ? 'locked' : newPw2 === '' ? 'pw-warn' : (newPw2 === newPw ? 'pw-ok' : 'pw-bad'),
+					onChange: function (e: ChangeEventLike) { setNewPw2(e.target.value) },
+				}),
+				newPw2 !== '' && unlocked && newLevel !== 'bad'
+					? React.createElement('div', { className: 'pw-hint' }, newPw2 === newPw ? '两次输入一致' : '两次输入不一致')
+					: null,
 				React.createElement('div', { className: 'row', style: { marginTop: 12 } },
-					React.createElement('button', { onClick: changePassword, disabled: busy }, '修改密码')),
+					React.createElement('button', {
+						onClick: changePassword,
+						disabled: busy || !unlocked || newLevel === 'bad' || newPw2 !== newPw,
+					}, '修改密码')),
 			))
 
 			// TOTP 绑定流程（未绑定 TOTP 时展示；已绑定 TOTP 且只想要通行密钥的用户也仍可在此补绑）

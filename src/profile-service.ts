@@ -60,6 +60,10 @@ export interface ProfileServiceDeps {
   readonly registry: KekRegistry
   readonly sessionOwner: (sessionId: string) => string | undefined
   readonly uidOf: (username: string) => Promise<string | undefined>
+  /** 校验"当前密码"时读取用户记录（由 index 注入）。 */
+  readonly readUserByUid?: (uid: string) => Promise<{ salt: string; hash: string; iterations: number } | undefined>
+  /** 用登录那套口令哈希比对（绝不落明文）。 */
+  readonly verifyPasswordAgainst?: (user: { salt: string; hash: string; iterations: number }, password: string) => boolean
   readonly balanceFetcher?: (apiKey: string, baseUrl?: string) => Promise<Omit<BalanceResult, 'fetchedAt'> | null>
   readonly now?: () => number
 }
@@ -88,6 +92,9 @@ export class ProfileService {
 
   /** 批量查询的每用户节流（整批一次，而不是每条一次）。 */
   private readonly lastBalanceAllAt = new Map<string, number>()
+
+  /** "当前密码"失焦校验的失败节流（每用户）。 */
+  private readonly verifyState = new Map<string, { fails: number; until: number }>()
   private readonly tokenByUid = new Map<string, string>()
   private master?: Uint8Array<ArrayBuffer>
 
@@ -387,6 +394,27 @@ export class ProfileService {
     }
     doc.usage[targetUid] = byTarget
     await this.deps.seam.writeRaw(keyUsage(ownerUid), JSON.stringify(doc))
+  }
+
+  /**
+   * 校验"当前密码"（界面失焦校验用）。只回结论，不签发会话或密钥；失败按用户节流。
+   */
+  async verifyPassword(uid: string, password: string): Promise<{ ok: boolean; error?: string }> {
+    const now = this.now()
+    const state = this.verifyState.get(uid) ?? { fails: 0, until: 0 }
+    if (state.until > now) return { ok: false, error: '尝试过于频繁，请稍后再试' }
+    const user = await this.deps.readUserByUid?.(uid)
+    if (user === undefined) return { ok: false, error: '无法校验（用户记录不可用）' }
+    const ok = this.deps.verifyPasswordAgainst?.(user, password) === true
+    if (!ok) {
+      state.fails += 1
+      state.until = state.fails >= 5 ? now + 60_000 : now + 1_000
+      if (state.fails >= 5) state.fails = 0
+      this.verifyState.set(uid, state)
+      return { ok: false, error: '当前密码不正确' }
+    }
+    this.verifyState.delete(uid)
+    return { ok: true }
   }
 
   /** 所有者视角的授权表：每条分享被授予给了哪些用户（未使用过也在此列出）。 */
