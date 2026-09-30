@@ -1,10 +1,14 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022"],
+    "lib": [
+      "ES2022"
+    ],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "types": ["node"],
+    "types": [
+      "node"
+    ],
     "rootDir": "src",
     "outDir": "lib",
     "strict": true,
@@ -18,5 +22,12 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/index.ts", "src/webauthn.ts", "src/modern-gateway.ts", "src/modern-policy.ts", "src/model-profiles.ts"]
+  "include": [
+    "src/index.ts",
+    "src/webauthn.ts",
+    "src/modern-gateway.ts",
+    "src/modern-policy.ts",
+    "src/model-profiles.ts",
+    "src/profile-kek.ts"
+  ]
 }

@@ -147,6 +147,22 @@ export async function sealPrivate(
   return { v: 1, alg: 'AES-256-GCM', kdf: { salt: toBase64(salt), iterations }, iv, ct }
 }
 
+/** 用给定密钥封存任意明文（AAD 由调用方决定）——供 WP4 的信封结构复用。 */
+export async function sealUnder(keyBytes: Uint8Array<ArrayBuffer>, aad: string, plaintext: string): Promise<SealedKey> {
+  const { iv, ct } = await encrypt(keyBytes, aad, plaintext)
+  return { v: 1, alg: 'AES-256-GCM', iv, ct }
+}
+
+/** 用给定密钥解封（口令派生的 KEK、服务端主密钥或每配置 DEK 皆可）。 */
+export async function openUnder(keyBytes: Uint8Array<ArrayBuffer>, aad: string, sealed: SealedKey): Promise<string> {
+  return await decrypt(keyBytes, aad, sealed.iv, sealed.ct)
+}
+
+/** 信封结构所需的随机数据密钥（DEK）。 */
+export function randomDek(): Uint8Array<ArrayBuffer> {
+  return randomBytes(KEY_BYTES)
+}
+
 /** 解开私有 API Key；口令错误或密文被篡改都会抛错（GCM 认证失败）。 */
 export async function openPrivate(password: string, uid: string, profileId: string, sealed: SealedKey): Promise<string> {
   if (sealed.kdf === undefined) throw new Error('私有配置缺少 KDF 参数')
