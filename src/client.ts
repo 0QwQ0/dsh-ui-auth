@@ -1008,7 +1008,7 @@
 					Object.keys(results).forEach(function (id) {
 						var row = results[id] || {}
 						next[id] = row.error !== undefined
-							? (row.error === 'rate-limited' ? '稍后重试' : row.error === 'no-profile' ? '未选择配置' : '不可用')
+							? (row.error === 'locked' ? '需先解锁' : row.error === 'rate-limited' ? '稍后重试' : row.error === 'no-profile' ? '未选择配置' : '不可用')
 							: ((row.currency || 'CNY') + ' ' + String(row.total))
 					})
 					setBalances(next)

@@ -450,7 +450,7 @@ export class ProfileService {
 
   async balanceOf(
     uid: string, profileId?: string, options?: { bulk?: boolean },
-  ): Promise<BalanceResult | { error: 'rate-limited' | 'unavailable' | 'no-profile' }> {
+  ): Promise<BalanceResult | { error: 'rate-limited' | 'unavailable' | 'no-profile' | 'locked' }> {
     const fetcher = this.deps.balanceFetcher
     if (fetcher === undefined) return { error: 'unavailable' }
     const doc = await this.readDefault(uid)
@@ -460,6 +460,11 @@ export class ProfileService {
     if (cached !== undefined && now - cached.fetchedAt < BALANCE_TTL_MS) return cached
     if (options?.bulk !== true && now - (this.lastBalanceAt.get(uid) ?? 0) < BALANCE_MIN_INTERVAL_MS) return { error: 'rate-limited' }
 
+    // 私有配置的口令派生密钥只在本人会话内存中：未解锁时明确告知"需先解锁"（而不是误报"未选择配置"）
+    if (doc.share === undefined && this.kekOf(uid) === undefined) {
+      const target = profileId ?? doc.profileId
+      if (target !== undefined) return { error: 'locked' }
+    }
     const resolved = await this.apiKeyFor(uid, doc, profileId)
     if (resolved === undefined) return { error: 'no-profile' }
     if (options?.bulk !== true) this.lastBalanceAt.set(uid, now)
@@ -482,6 +487,7 @@ export class ProfileService {
     const results: Record<string, BalanceResult | { error: string }> = {}
     for (const meta of profiles) {
       const id = String(meta.profileId)
+      // 逐条提示"需先解锁"
       const one = await this.balanceOf(uid, meta.source === 'shared' ? undefined : id, { bulk: true })
       results[id] = one
       // 依次请求，给上游留出间隔（同时避免被上游限流）
