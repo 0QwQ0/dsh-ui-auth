@@ -168,6 +168,17 @@
 		interface PluginContext {
 			get(name: 'slots'): SlotsService | undefined
 			get(name: string): unknown
+			/** Cordis 副作用注册：locale 词典的注册要挂在它上面，才能随插件卸载一起回收。 */
+			effect?<T>(callback: () => T): void
+			/** Cordis 事件订阅：用于 `locale/change` 触发重渲染。 */
+			on?(event: string, listener: (...args: unknown[]) => void): void
+		}
+
+		/** DSH 客户端 locale 服务（只用这三个方法，故按结构声明）。 */
+		interface LocaleService {
+			register?(ns: string, dicts: unknown): () => void
+			bind?(ns: string): (key: string, params?: Record<string, unknown>) => string
+			getSnapshot?(): { active?: string }
 		}
 
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
@@ -568,7 +579,7 @@
 						React.createElement('h2', null, '确认身份 · ' + title),
 						React.createElement('div', { className: 'muted', style: { marginBottom: 4 } },
 							'通行密钥可以代替密码登录，因此改动前必须确认是你本人。'),
-						React.createElement('label', null, '当前密码'),
+						React.createElement('label', null, t('password.current')),
 						React.createElement('input', { type: 'password', value: suPw, onChange: function (e: ChangeEventLike) { setSuPw(e.target.value) }, autoComplete: 'current-password' }),
 						needTotp
 							? React.createElement('div', null,
@@ -681,8 +692,8 @@
 			var newLevel = passwordLevel(newPw)
 			var unlocked = oldCheck === 'ok'
 			cards.push(React.createElement('div', { className: 'card', key: 'password' },
-				React.createElement('h2', null, '修改密码'),
-				React.createElement('label', null, '当前密码'),
+				React.createElement('h2', null, t('password.submit')),
+				React.createElement('label', null, t('password.current')),
 				React.createElement('input', {
 					type: 'password', value: oldPw, autoComplete: 'current-password',
 					className: oldCheck === 'ok' ? 'pw-ok' : oldCheck === 'bad' ? 'pw-bad' : '',
@@ -701,7 +712,7 @@
 					onChange: function (e: ChangeEventLike) { setNewPw(e.target.value) },
 				}),
 				unlocked && newPw !== '' ? React.createElement('div', { className: 'pw-hint' }, '密码强度：' + levelText(newLevel)) : null,
-				React.createElement('label', null, '确认新密码'),
+				React.createElement('label', null, t('password.confirm')),
 				React.createElement('input', {
 					type: 'password', value: newPw2, autoComplete: 'new-password',
 					disabled: !unlocked || newLevel === 'bad',
@@ -709,13 +720,13 @@
 					onChange: function (e: ChangeEventLike) { setNewPw2(e.target.value) },
 				}),
 				newPw2 !== '' && unlocked && newLevel !== 'bad'
-					? React.createElement('div', { className: 'pw-hint' }, newPw2 === newPw ? '两次输入一致' : '两次输入不一致')
+					? React.createElement('div', { className: 'pw-hint' }, newPw2 === newPw ? t('password.match') : t('password.mismatch'))
 					: null,
 				React.createElement('div', { className: 'row', style: { marginTop: 12 } },
 					React.createElement('button', {
 						onClick: changePassword,
 						disabled: busy || !unlocked || newLevel === 'bad' || newPw2 !== newPw,
-					}, '修改密码')),
+					}, t('password.submit'))),
 			))
 
 			// TOTP 绑定流程（未绑定 TOTP 时展示；已绑定 TOTP 且只想要通行密钥的用户也仍可在此补绑）
@@ -816,7 +827,7 @@
 					? React.createElement('table', null,
 						React.createElement('thead', null,
 							React.createElement('tr', null,
-								React.createElement('th', null, '名称'),
+								React.createElement('th', null, t('models.colName')),
 								React.createElement('th', null, '类型'),
 								React.createElement('th', null, '操作'),
 							)),
@@ -829,7 +840,7 @@
 									React.createElement('td', null,
 										React.createElement('div', { className: 'actions' },
 											React.createElement('button', { className: 'ghost', onClick: function () { renamePasskey(p) }, disabled: busy || su.busy }, '重命名'),
-											React.createElement('button', { className: 'danger', onClick: function () { removePasskey(p) }, disabled: busy || su.busy }, '删除'))),
+											React.createElement('button', { className: 'danger', onClick: function () { removePasskey(p) }, disabled: busy || su.busy }, t('common.remove')))),
 								)
 							}),
 						),
@@ -897,7 +908,7 @@
 												? React.createElement('button', { className: 'ghost', onClick: function () { resetPasskeys(u) }, disabled: busy }, '清除通行密钥')
 												: null,
 											React.createElement('button', { className: 'ghost', onClick: function () { toggleRole(u) }, disabled: busy }, '切换角色'),
-											React.createElement('button', { className: 'danger', onClick: function () { deleteUser(u) }, disabled: busy }, '删除'),
+											React.createElement('button', { className: 'danger', onClick: function () { deleteUser(u) }, disabled: busy }, t('common.remove')),
 										)),
 								)
 							}),
@@ -1008,7 +1019,7 @@
 					Object.keys(results).forEach(function (id) {
 						var row = results[id] || {}
 						next[id] = row.error !== undefined
-							? (row.error === 'locked' ? '需先解锁' : row.error === 'rate-limited' ? '稍后重试' : row.error === 'no-profile' ? '未选择配置' : '不可用')
+							? (row.error === 'locked' ? t('common.needUnlock') : row.error === 'rate-limited' ? t('common.later') : row.error === 'no-profile' ? '未选择配置' : t('common.notAvailable'))
 							: ((row.currency || 'CNY') + ' ' + String(row.total))
 					})
 					setBalances(next)
@@ -1033,7 +1044,7 @@
 			}
 
 			var children: any[] = []
-			children.push(React.createElement('h2', null, '模型'))
+			children.push(React.createElement('h2', null, t('models.title')))
 			children.push(React.createElement('div', { className: 'muted', style: { marginBottom: 10 } },
 				'这里的配置只属于你自己：其他用户（包括管理员）都无法查看你的 API Key。管理员分享给你的配置可以直接选用，能看到余额，但看不到 Key。'))
 			if (state.error !== '') {
@@ -1046,37 +1057,37 @@
 			if (state.loaded && !state.unlocked) {
 				children.push(React.createElement('div', { key: 'pw-row', className: 'fields' },
 					React.createElement('div', { className: 'field compact' },
-						React.createElement('label', null, '当前登录口令'),
+						React.createElement('label', null, t('models.passwordLabel')),
 						React.createElement('input', {
-							type: 'password', placeholder: '用于解锁私人密钥（不保存）', value: password,
-							'aria-label': '当前登录口令',
+							type: 'password', placeholder: t('models.passwordPlaceholder'), value: password,
+							'aria-label': t('models.passwordLabel'),
 							onChange: function (e: any) { setPassword(e.target.value) },
 						}))))
 				toolbar.push(React.createElement('button', {
 					key: 'unlock',
 					disabled: password === '',
 					onClick: function () { act('profileUnlock', { password: password }); setPassword('') },
-				}, '解锁'))
+				}, t('common.unlock')))
 			}
 			toolbar.push(React.createElement('button', {
 				key: 'balance', disabled: state.profiles.length === 0 || state.busy === 'balance',
 				onClick: queryAllBalances,
-			}, state.busy === 'balance' ? '查询中…' : '查余额（全部配置）'))
+			}, state.busy === 'balance' ? t('common.querying') : t('models.balanceAll')))
 			toolbar.push(React.createElement('button', {
 				key: 'default', disabled: selectedProfile() === undefined || selectedProfile().source === 'shared',
 				onClick: function () { act('profileSetDefault', { profileId: state.selected }) },
-			}, '设为默认'))
+			}, t('models.setDefault')))
 			toolbar.push(React.createElement('button', {
 				key: 'use', disabled: selectedProfile() === undefined || selectedProfile().source !== 'shared',
 				onClick: function () {
 					var parts = String(state.selected).split('/')
 					act('shareSelect', { ownerUid: parts[0], profileId: parts[1] })
 				},
-			}, '选用分享'))
+			}, t('models.useShare')))
 			toolbar.push(React.createElement('button', {
 				key: 'remove', disabled: selectedProfile() === undefined || selectedProfile().source === 'shared',
 				onClick: function () { act('profileRemove', { profileId: state.selected }) },
-			}, '删除'))
+			}, t('common.remove')))
 			children.push(React.createElement('div', { key: 'toolbar', className: 'toolbar' }, toolbar))
 
 			// —— 配置表格（不是一条条列 + 重复按钮）——
@@ -1090,31 +1101,31 @@
 					React.createElement('td', null, state.selected === id ? '●' : '○'),
 					React.createElement('td', null, p.label || '未命名'),
 					React.createElement('td', null, String(p.model || '—')),
-					React.createElement('td', null, isShared ? '管理员分享' : (p.hint || '—')),
+					React.createElement('td', null, isShared ? t('models.sharedByAdmin') : (p.hint || '—')),
 					React.createElement('td', null, p.isDefault ? '是' : ''),
 					React.createElement('td', null, balances[id] !== undefined ? balances[id] : '—'))
 			})
 			children.push(React.createElement('table', { key: 'table' },
 				React.createElement('thead', null, React.createElement('tr', null,
 					React.createElement('th', null, ''),
-					React.createElement('th', null, '名称'),
-					React.createElement('th', null, '模型'),
+					React.createElement('th', null, t('models.colName')),
+					React.createElement('th', null, t('models.colModel')),
 					React.createElement('th', null, 'API Key'),
-					React.createElement('th', null, '默认'),
-					React.createElement('th', null, '余额'))),
+					React.createElement('th', null, t('models.colDefault')),
+					React.createElement('th', null, t('models.colBalance')))),
 				React.createElement('tbody', null, rows.length === 0
 					? React.createElement('tr', null, React.createElement('td', { colSpan: 6, className: 'muted' }, '还没有配置。未配置时模型调用会被拒绝——不会回退到部署级配置。'))
 					: rows)))
 
 			// —— 新增配置（放在表格下方，占满一行便于填写）——
-			children.push(React.createElement('div', { key: 'add-title', style: { fontWeight: 600, margin: '14px 0 6px' } }, '添加我自己的配置'))
+			children.push(React.createElement('div', { key: 'add-title', style: { fontWeight: 600, margin: '14px 0 6px' } }, t('models.addTitle')))
 			// 字段用 label + 输入框（与「用户管理」一致：12px 标题在左上角，纵向间距 ≥10px）
 			children.push(React.createElement('div', { key: 'add', className: 'fields' },
 				React.createElement('div', { className: 'field' },
-					React.createElement('label', null, '名称'),
+					React.createElement('label', null, t('models.colName')),
 					React.createElement('input', { placeholder: '例如：我的 DeepSeek', value: form.label, onChange: function (e: any) { setForm({ ...form, label: e.target.value }) } })),
 				React.createElement('div', { className: 'field' },
-					React.createElement('label', null, '模型'),
+					React.createElement('label', null, t('models.fieldModel')),
 					React.createElement('input', { placeholder: 'deepseek-chat', value: form.model, onChange: function (e: any) { setForm({ ...form, model: e.target.value }) } })),
 				React.createElement('div', { className: 'field' },
 					React.createElement('label', null, 'baseURL（留空用官方地址）'),
@@ -1126,14 +1137,14 @@
 					React.createElement('button', {
 						disabled: form.apiKey === '' || keyTest.busy,
 						onClick: checkKeyValidity,
-					}, keyTest.busy ? '校验中…' : '校验有效性'),
+					}, keyTest.busy ? t('common.checking') : t('common.checkKey')),
 					React.createElement('button', {
 						disabled: form.model === '' || form.apiKey === '',
 						onClick: function () {
 							act('profileCreate', { label: form.label, provider: 'deepseek', model: form.model, baseUrl: form.baseUrl, apiKey: form.apiKey })
 							setForm({ label: '', model: 'deepseek-chat', baseUrl: '', apiKey: '' })
 						},
-					}, '添加'))))
+					}, t('common.add')))))
 			if (keyTest.result !== '') {
 				children.push(React.createElement('div', { key: 'keytest', className: 'pw-hint' }, keyTest.result))
 			}
@@ -1143,8 +1154,10 @@
 		// ============ 设置导航去重（v0.7.0） ============
 		// 我们的「模型」页与出厂「模型」页同名同区：内容由 priority:-1 决定（我们的胜出），
 		// 但设置导航会把两行都列出来——这里把重复行收敛掉，只保留一行（点哪一行都是同一个内容）。
-		function dedupeSettingsNav(label: string): void {
+		function dedupeSettingsNav(key: string): void {
 			if (typeof document === "undefined" || typeof MutationObserver === "undefined") return
+			// 语言切换后导航标签文本会变，因此两种语言的写法都要认（否则重复行会重新冒出来）。
+			var labels = [message('zh', key as never), message('en', key as never)]
 			var converge = function (): void {
 				var navs = document.querySelectorAll("[role=dialog] nav")
 				for (var i = 0; i < navs.length; i++) {
@@ -1152,7 +1165,7 @@
 					var kept = 0
 					for (var j = 0; j < buttons.length; j++) {
 						var element = buttons[j] as HTMLElement
-						if ((element.textContent || "").trim() !== label) continue
+						if (labels.indexOf((element.textContent || "").trim()) === -1) continue
 						kept += 1
 						if (kept > 1) {
 							element.style.display = "none"
@@ -1250,7 +1263,7 @@
 			}
 
 			var children: any[] = []
-			children.push(React.createElement('h2', null, '分享管理'))
+			children.push(React.createElement('h2', null, t('shares.title')))
 			children.push(React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 13, lineHeight: '20px', marginBottom: 12 } },
 				'把你的模型分享给指定用户：对方可以选用并查看余额，但看不到你的 API Key；撤销后立即失效。'))
 			if (state.error !== '') {
@@ -1263,7 +1276,7 @@
 					React.createElement('label', null, '分享名称'),
 					React.createElement('input', { placeholder: '例如：共享 DeepSeek', value: form.label, onChange: function (e: any) { setForm({ ...form, label: e.target.value }) } })),
 				React.createElement('div', { className: 'field' },
-					React.createElement('label', null, '模型'),
+					React.createElement('label', null, t('shares.fieldModel')),
 					React.createElement('input', { placeholder: 'deepseek-chat', value: form.model, onChange: function (e: any) { setForm({ ...form, model: e.target.value }) } })),
 				React.createElement('div', { className: 'field' },
 					React.createElement('label', null, 'baseURL（留空用官方地址）'),
@@ -1280,7 +1293,7 @@
 						setForm({ label: '', model: 'deepseek-chat', baseUrl: '', apiKey: '' })
 						setKeyTest({ busy: false, result: '' })
 					},
-				}, '创建分享配置')))
+				}, t('shares.create'))))
 			if (keyTest.result !== '') {
 				children.push(React.createElement('div', { key: 'keytest', style: { fontSize: 12, marginBottom: 10, color: 'var(--dsw-alias-label-secondary)' } }, keyTest.result))
 			}
@@ -1305,28 +1318,28 @@
 				children.push(React.createElement('div', { key: p.profileId, style: { borderTop: '1px solid var(--dsw-alias-border-l2)', paddingTop: 10 } },
 					React.createElement('div', { style: { fontWeight: 600 } }, (p.label || '分享') + ' · ' + p.model),
 					React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 12, margin: '4px 0 8px' } }, '用量：' + usageOf(p.profileId)),
-					React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, '已授权用户'),
+					React.createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, t('shares.grantees')),
 					rows.length === 0
-						? React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 12 } }, '尚未授权给任何用户')
+						? React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 12 } }, t('shares.noGrantees'))
 						: React.createElement('div', null, rows.map(function (entry: any) {
 							return React.createElement('div', { key: entry.targetUid, style: { display: 'flex', gap: 8, alignItems: 'center', padding: '3px 0' } },
 								React.createElement('span', null, entry.username),
 								React.createElement('button', {
 									onClick: function () { act('shareRevoke', { profileId: p.profileId, username: entry.username }) },
-								}, '取消授权'))
+								}, t('shares.revoke')))
 						})),
 					React.createElement('div', { style: { display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 } },
 						React.createElement('input', {
-							placeholder: '授予用户名', value: grant.username,
+							placeholder: t('shares.grantPlaceholder'), value: grant.username,
 							onChange: function (e: any) { setGrant({ username: e.target.value }) },
 						}),
 						React.createElement('button', {
 							disabled: grant.username === '',
 							onClick: function () { act('shareGrant', { profileId: p.profileId, username: grant.username }, p.profileId); setGrant({ username: '' }) },
-						}, '授予'))))
+						}, t('shares.grant')))))
 			})
 			if (state.loaded && state.shared.length === 0) {
-				children.push(React.createElement('div', { key: 'empty', style: { color: 'var(--dsw-alias-label-secondary)' } }, '还没有分享配置。'))
+				children.push(React.createElement('div', { key: 'empty', style: { color: 'var(--dsw-alias-label-secondary)' } }, t('shares.empty')))
 			}
 			return React.createElement('div', { className: 'dshua' }, React.createElement('div', { className: 'card' }, children))
 		}
@@ -1378,8 +1391,41 @@
 		// @deepseek-ai/dsh-client-ui-renderer 提供；同时 0.1.5 让客户端到达顺序变成显式
 		// 依赖（dsh.client.inject 不再只是信息性元数据）。不声明 inject 时本行可能先于
 		// 该服务到达 —— 旧实现此时静默 return，表现为设置面板里「用户管理」整个消失。
+		import { dictionaries, message, normalizeLocale } from './i18n.js'
+
+		// ============ i18n（与 DSH 的 locale 服务联动） ============
+		// DSH 客户端提供 `ctx.locale`：register 注册词典、bind 取 t、getSnapshot().active 得到当前语言；
+		// 切换语言时 DSH 广播 `locale/change`，我们据此重渲染（下面这套极简订阅）。
+		var localeTick: Array<() => void> = []
+		function onLocaleChange(listener: () => void): () => void {
+			localeTick.push(listener)
+			return function () { localeTick = localeTick.filter(function (item) { return item !== listener }) }
+		}
+		function notifyLocaleChange(): void { localeTick.slice().forEach(function (listener) { listener() }) }
+		/** t：优先用 DSH 绑定（含回退链与插值），未接上时用内置词典。 */
+		var t: (key: string, params?: Record<string, unknown>) => string = function (key, params) {
+			return message(normalizeLocale(typeof document !== 'undefined' ? document.documentElement.lang : 'zh'), key as never, params)
+		}
+		function useLocaleTick(): void {
+			var state = React.useState(0)
+			React.useEffect(function () {
+				return onLocaleChange(function () { state[1](function (n: number) { return n + 1 }) })
+			}, [])
+		}
+
 		exports.inject = ['slots']
 		exports.apply = function apply(ctx: PluginContext) {
+			// 与 DSH 的 locale 服务联动：注册我们的词典并用它的 t（含 en 回退链与 {name} 插值）。
+			// 宿主没有该服务时保持内置词典，插件照常工作。
+			const localeService = ctx.get('locale') as LocaleService | undefined
+			const register = localeService?.register
+			const bind = localeService?.bind
+			const effect = ctx.effect
+			if (register !== undefined && bind !== undefined && effect !== undefined) {
+				effect(function () { return register('dsh-ui-auth', dictionaries()) })
+				t = bind('dsh-ui-auth')
+			}
+			if (typeof ctx.on === 'function') ctx.on('locale/change', notifyLocaleChange)
 			injectAuthCss()
 			mountSettings(ctx, 0)
 		}
@@ -1403,17 +1449,17 @@
 				if (j.me !== undefined && j.me.role !== 'admin') {
 					slots!.inject('settings.section', function () {
 						return slots!.register(
-							{ name: 'settings.section', id: 'models', order: 10, priority: -1, label: function () { return '模型' } },
+							{ name: 'settings.section', id: 'models', order: 10, priority: -1, label: function () { return t('models.title') } },
 							function () { return React.createElement(UserModelsPage) },
 						)
 					})
-					dedupeSettingsNav('模型')
+					dedupeSettingsNav('models.title')
 				}
 				// 管理员：分享管理（把自己的模型分享给指定用户，并看待用量）
 				if (j.me !== undefined && j.me.role === 'admin') {
 					slots!.inject('settings.section', function () {
 						return slots!.register(
-							{ name: 'settings.section', id: 'auth-shares', order: 31, label: function () { return '分享管理' } },
+							{ name: 'settings.section', id: 'auth-shares', order: 31, label: function () { return t('shares.title') } },
 							function () { return React.createElement(SharesPage) },
 						)
 					})

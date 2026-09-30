@@ -30,6 +30,7 @@
     "src/model-profiles.ts",
     "src/profile-kek.ts",
     "src/profile-service.ts",
-    "src/user-routes.ts"
+    "src/user-routes.ts",
+    "src/i18n.ts"
   ]
 }
