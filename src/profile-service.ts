@@ -13,7 +13,8 @@ import {
   type PrivateProfile, type ProfileSeam, type ReceivedShare, type SharedProfile,
 } from './model-profiles.js'
 import {
-  deriveUserKek, ensureUserKdf, openPrivateWithKek, sealPrivateWithKek, type KekRegistry,
+  deriveUserKek, ensureUserKdf, newUserKdf, openPrivateWithKek, readUserKdf, rewrapWithKek,
+  sealPrivateWithKek, writeUserKdf, type KekRegistry,
 } from './profile-kek.js'
 
 const keyDefault = (uid: string): string => `dsh-auth/profile-default/${uid}`
@@ -113,6 +114,46 @@ export class ProfileService {
 
   isUnlocked(uid: string): boolean {
     return this.kekOf(uid) !== undefined
+  }
+
+  /**
+   * 改密：用旧口令解出各配置的 DEK，再用新口令（**新的 salt**）重包裹，并立即用新 KEK 重新解锁本会话。
+   * 返回重包裹的配置条数。没有 KDF 记录（从未启用私有配置）时只切换会话 KEK。
+   */
+  async changePassword(uid: string, token: string, oldPassword: string, newPassword: string): Promise<number> {
+    const before = await readUserKdf(this.deps.seam, uid)
+    if (before === undefined) {
+      // 该用户从未启用私有配置：无需派生新 KEK，也没有要重包裹的记录。
+      // 只需丢弃可能残留的旧 KEK（改密后旧口令不应再能解锁），等下次显式解锁再建 KDF 记录。
+      this.dropUser(uid)
+      return 0
+    }
+    const oldKek = await deriveUserKek(oldPassword, before.salt, before.iterations)
+    const fresh = newUserKdf(before.iterations)
+    const newKek = await deriveUserKek(newPassword, fresh.salt, fresh.iterations)
+    const profiles = await this.deps.store.readAllPrivate(uid, uid)
+    let rewrapped = 0
+    const next: typeof profiles = []
+    for (const profile of profiles) {
+      if (profile.wrappedDek === undefined) { next.push(profile); continue }
+      next.push({
+        ...profile,
+        wrappedDek: await rewrapWithKek(oldKek, newKek, uid, profile.profileId, profile.wrappedDek),
+        updatedAt: new Date(this.now()).toISOString(),
+      })
+      rewrapped += 1
+    }
+    await this.deps.store.replaceAllPrivate(uid, next)
+    await writeUserKdf(this.deps.seam, uid, fresh)
+    this.deps.registry.set(token, uid, newKek)
+    this.tokenByUid.set(uid, token)
+    return rewrapped
+  }
+
+  /** 丢弃某用户的全部会话密钥（登出某设备、删除用户、管理员重置口令）。 */
+  dropUser(uid: string): number {
+    this.tokenByUid.delete(uid)
+    return this.deps.registry.dropByUid(uid)
   }
 
   private async readDefault(uid: string): Promise<DefaultDoc> {

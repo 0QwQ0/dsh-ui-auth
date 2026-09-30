@@ -52,6 +52,28 @@ export async function ensureUserKdf(
   return { salt, iterations }
 }
 
+/** 读取用户级 KDF 参数（不存在则 undefined，用于判断该用户是否已启用私有配置）。 */
+export async function readUserKdf(seam: ProfileSeam, uid: string): Promise<{ salt: string; iterations: number } | undefined> {
+  const raw = await seam.readRaw(keyKdf(uid))
+  if (raw === undefined) return undefined
+  const parsed = JSON.parse(raw) as Partial<KdfDoc>
+  return parsed.v === 1 && typeof parsed.salt === 'string' && typeof parsed.iterations === 'number'
+    ? { salt: parsed.salt, iterations: parsed.iterations }
+    : undefined
+}
+
+/** 写入用户级 KDF 参数（改密时换新 salt）。 */
+export async function writeUserKdf(
+  seam: ProfileSeam, uid: string, value: { salt: string; iterations: number },
+): Promise<void> {
+  await seam.writeRaw(keyKdf(uid), JSON.stringify({ v: 1, salt: value.salt, iterations: value.iterations } satisfies KdfDoc))
+}
+
+/** 生成一组新的用户级 KDF 参数（不落盘）。 */
+export function newUserKdf(iterations = DEFAULT_KDF_ITERATIONS): { salt: string; iterations: number } {
+  return { salt: toBase64(randomSalt()), iterations }
+}
+
 /** 口令 + 用户级 salt → userKek（会话内存中持有；不保存口令）。 */
 export async function deriveUserKek(password: string, saltB64: string, iterations: number): Promise<Uint8Array<ArrayBuffer>> {
   return await deriveKek(password, fromBase64(saltB64), iterations)

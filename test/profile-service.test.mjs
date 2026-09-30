@@ -37,6 +37,21 @@ async function harness({ withBalance = false } = {}) {
   return { seam, store, registry, service, aliceUid, bobUid, balanceCalls: () => balanceCalls }
 }
 
+test('password change re-wraps existing private profiles, and is a no-op without them', async () => {
+  const h = await harness()
+  await h.service.createProfile(h.aliceUid, { label: 'a', provider: 'deepseek', model: 'deepseek-chat', apiKey: ALICE_KEY })
+  assert.equal(await h.service.changePassword(h.aliceUid, 't-alice', 'alice-pw', 'alice-pw2'), 1, '一条配置被重包裹')
+  // 新口令下原 Key 仍可解出（重包裹只换了包裹层）
+  assert.deepEqual(await h.service.resolveKeyForSession('s-alice'), {
+    ok: true, apiKey: ALICE_KEY, provider: 'deepseek', model: 'deepseek-chat', source: 'own',
+  })
+  // 旧口令已无法解开重包裹后的 DEK
+  await assert.rejects(() => h.service.changePassword(h.aliceUid, 't-alice', 'alice-pw', 'alice-pw3'))
+  // bob 有 KDF 记录（harness 里 bindSession 过）但没有配置 → 重包裹 0 条，且清单仍为空
+  assert.equal(await h.service.changePassword(h.bobUid, 't-bob', 'bob-pw', 'bob-pw2'), 0, '没有配置就没有可重包裹的记录')
+  assert.deepEqual(await h.service.listProfiles(h.bobUid), [])
+})
+
 test('profiles are created, listed and updated without ever returning key material', async () => {
   const { service, aliceUid } = await harness()
   const created = await service.createProfile(aliceUid, { label: '我的 Key', provider: 'deepseek', model: 'deepseek-chat', apiKey: ALICE_KEY })

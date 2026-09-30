@@ -228,6 +228,20 @@ export class ProfileStore {
     return (await this.readPrivateDoc(ownerUid)).profiles.find(profile => profile.profileId === profileId)
   }
 
+  /**
+   * 读取**本人**全部私有配置（含密文）——仅供改密时的批量重包裹使用。
+   * 与 `readPrivate` 一样要求调用者 uid 等于所有者 uid。
+   */
+  async readAllPrivate(callerUid: string, ownerUid: string): Promise<PrivateProfile[]> {
+    assertSameUser(callerUid, ownerUid)
+    return (await this.readPrivateDoc(ownerUid)).profiles
+  }
+
+  /** 批量写回（改密重包裹后使用；覆盖同名 profileId）。 */
+  async replaceAllPrivate(ownerUid: string, profiles: PrivateProfile[]): Promise<void> {
+    await this.write(keyPrivate(ownerUid), { v: 1, profiles })
+  }
+
   /** 写入/覆盖一条私有配置。 */
   async writePrivate(ownerUid: string, profile: PrivateProfile): Promise<void> {
     const doc = await this.readPrivateDoc(ownerUid)
