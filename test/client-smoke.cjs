@@ -95,7 +95,7 @@ const tick = () => new Promise((r) => setTimeout(r, 20))
   check('user: models lock registered', modelsReg !== undefined)
   if (modelsReg !== undefined) {
     check('user: models priority -1 (content winner)', modelsReg.opts.priority === -1, 'priority=' + modelsReg.opts.priority)
-    check('user: models label', modelsReg.opts.label() === '模型与密钥')
+    check('user: models label', modelsReg.opts.label() === '模型')
     const texts = []
     const walk = (node) => {
       if (node === null || node === undefined) return
@@ -105,8 +105,10 @@ const tick = () => new Promise((r) => setTimeout(r, 20))
       if (Array.isArray(node.children)) node.children.forEach(walk)
     }
     walk(modelsReg.render().type())
-    check('user: per-user panel renders', texts.some((t) => t.includes('模型与 API Key')), texts.join('|'))
+    check('user: per-user panel renders', texts.some((t) => t.includes('查余额（全部配置）')), texts.join('|'))
+    check('user: panel shows profiles as a table', texts.includes('名称') && texts.includes('余额'), texts.join('|'))
     check('user: panel states the no-config block (Q2)', texts.some((t) => t.includes('会被拒绝')), texts.join('|'))
+  check('user: no account section is injected (the deployment has none either)', !s2.recorded.some((r) => r.opts.id === 'account'))
   }
 
   // ---- 静态断言 ----

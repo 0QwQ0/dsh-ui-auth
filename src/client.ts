@@ -226,7 +226,14 @@
 
 		// ============ RPC（cookie 认证的 /auth/rpc/* 端点，服务器端按会话鉴权） ============
 		/**
-		 * 调用 `/auth/rpc/<method>`。应答是各方法自带的 JSON 信封，形状在调用点标注
+		 * 调用 
+.dshua table{border-collapse:collapse;width:100%;margin:4px 0}
+.dshua th,.dshua td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l2);font-size:13px}
+.dshua th{color:var(--dsw-alias-label-secondary);font-weight:600}
+.dshua .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.dshua .muted{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:20px}
+.dshua input,.dshua select{min-width:120px}
+`/auth/rpc/<method>`。应答是各方法自带的 JSON 信封，形状在调用点标注
 		 * （MeResult / UsersResult / InvitesResult / TotpStatusResult / TotpGenerateResult）；
 		 * 信封本身是 `RpcResult`，这里按 `any` 传递以保留调用点标注。
 		 * 401 时先跳转登录页，再抛 code === 'session-expired' 的错误。
@@ -887,126 +894,168 @@
 			return React.createElement('div', { className: 'dshua' }, cards, renderStepUp())
 		}
 
-		// ============ 按用户的模型与 API Key（v0.7.0） ============
-		// 每个用户管理**自己的**模型与 Key；管理员分享给自己的配置也可用（可看余额、看不到 Key）。
-		// 私有配置用**口令派生密钥**加密，只在本人会话内存中解锁 → 未解锁时显式提示"解锁"。
-		// 管理员不注入本页（保留出厂的部署级模型页）。0.2.0 起设置导航由 settings-shell 掌管，
-		// 因此**不再**用 nth-child 隐藏出厂导航行——模型页现在是每个用户的正常能力。
+		// ============ 模型（按用户；v0.7.0） ============
+		// 与出厂「模型」页**同名同区**（内容以 priority:-1 胜出），并把重复的导航行收敛为一个。
+		// 排版：配置用**表格**呈现，功能按钮只保留**一组**——「查余额」遍历该用户全部配置。
 		function UserModelsPage() {
-			var st = React.useState({ loaded: false, unlocked: false, own: [] as any[], shares: [] as any[], error: '' })
+			var st = React.useState({ loaded: false, unlocked: false, profiles: [] as any[], error: '', selected: '', busy: '' })
 			var state = st[0], setState = st[1]
 			var pw = React.useState(''); var password = pw[0], setPassword = pw[1]
-			var fm = React.useState({ label: '', model: 'deepseek-chat', apiKey: '' })
+			var fm = React.useState({ label: '', model: 'deepseek-chat', baseUrl: '', apiKey: '' })
 			var form = fm[0], setForm = fm[1]
 			var bl = React.useState({} as Record<string, string>)
 			var balances = bl[0], setBalances = bl[1]
 
-			function refresh() {
+			function refresh(pick?: string) {
 				rpc('profileList', {}).then(function (j) {
 					var list = (j.profiles || []) as any[]
-					setState({
-						loaded: true, unlocked: j.unlocked === true,
-						own: list.filter(function (p) { return p.source === 'own' }),
-						shares: list.filter(function (p) { return p.source === 'shared' }),
-						error: '',
+					setState(function (prev: any) {
+						var selected = pick !== undefined ? pick : prev.selected
+						if (selected === '' && list.length > 0) selected = list[0].profileId
+						return { loaded: true, unlocked: j.unlocked === true, profiles: list, error: '', selected: selected, busy: '' }
 					})
 				}).catch(function (e) {
-					setState({ loaded: true, unlocked: false, own: [], shares: [], error: errText(e) })
+					setState(function (prev: any) { return { ...prev, loaded: true, error: errText(e), busy: '' } })
 				})
 			}
 			React.useEffect(function () { refresh() }, [])
-
-			function act(method: string, body: Record<string, unknown>): void {
-				rpc(method, body).then(function () { refresh() }).catch(function (e) {
-					setState(function (prev: any) { return { ...prev, error: errText(e) } })
+			function act(method: string, body: Record<string, unknown>, pick?: string): void {
+				setState(function (prev: any) { return { ...prev, busy: method } })
+				rpc(method, body).then(function () { refresh(pick) }).catch(function (e) {
+					setState(function (prev: any) { return { ...prev, error: errText(e), busy: '' } })
 				})
 			}
-			function showBalance(id: string): void {
-				rpc('balanceQuery', id === '' ? {} : { profileId: id }).then(function (j) {
-					var b = j.balance || {}
-					setBalances(function (prev: Record<string, string>) {
-						var next: Record<string, string> = {}; for (var k in prev) next[k] = prev[k]
+			// 单组按钮：一次遍历查询该用户全部配置的余额，逐行回填
+			function queryAllBalances(): void {
+				setState(function (prev: any) { return { ...prev, busy: 'balance', error: '' } })
+				var next: Record<string, string> = {}
+				var jobs = state.profiles.map(function (p: any) {
+					var id = String(p.profileId)
+					var body = p.source === 'shared' ? {} : { profileId: id }
+					return rpc('balanceQuery', body).then(function (j) {
+						var b = j.balance || {}
 						next[id] = (b.currency || 'CNY') + ' ' + String(b.total)
-						return next
-					})
-				}).catch(function (e) {
-					setBalances(function (prev: Record<string, string>) {
-						var next: Record<string, string> = {}; for (var k in prev) next[k] = prev[k]
-						next[id] = errText(e)
-						return next
-					})
+					}).catch(function (e) { next[id] = errText(e) })
 				})
+				Promise.all(jobs).then(function () {
+					setBalances(next)
+					setState(function (prev: any) { return { ...prev, busy: '' } })
+				})
+			}
+			function selectedProfile(): any {
+				return state.profiles.filter(function (p: any) { return String(p.profileId) === state.selected })[0]
 			}
 
 			var children: any[] = []
-			children.push(React.createElement('h2', null, '模型与 API Key'))
-			children.push(React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 13, lineHeight: '20px', marginBottom: 12 } },
-				'这里的配置只属于你自己：其他用户（包括管理员）都无法查看你的 API Key。管理员可以把他的模型分享给你使用——你可以选用、可以看到余额，但看不到他的 Key。'))
-
+			children.push(React.createElement('h2', null, '模型'))
+			children.push(React.createElement('div', { className: 'muted', style: { marginBottom: 10 } },
+				'这里的配置只属于你自己：其他用户（包括管理员）都无法查看你的 API Key。管理员分享给你的配置可以直接选用，能看到余额，但看不到 Key。'))
 			if (state.error !== '') {
-				children.push(React.createElement('div', { style: { color: 'var(--dsw-alias-label-error, #ff6b6b)', marginBottom: 10 } }, state.error))
+				children.push(React.createElement('div', { style: { color: 'var(--dsw-alias-label-error, #ff6b6b)', marginBottom: 8 } }, state.error))
 			}
 
+			// —— 单组功能按钮 ——
+			var toolbar: any[] = []
 			if (state.loaded && !state.unlocked) {
-				children.push(React.createElement('div', { key: 'unlock', style: { display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' } },
-					React.createElement('span', null, '解锁私人密钥：'),
-					React.createElement('input', {
-						type: 'password', value: password, placeholder: '当前登录口令', 'aria-label': '当前登录口令',
-						onChange: function (e: any) { setPassword(e.target.value) },
-					}),
-					React.createElement('button', {
-						onClick: function () { act('profileUnlock', { password: password }); setPassword('') },
-						disabled: password === '',
-					}, '解锁'),
-					React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)' } },
-						'（私钥只用你的口令派生的密钥加密，因此需要解锁；登出后自动重新上锁）')))
+				toolbar.push(React.createElement('input', {
+					key: 'pw', type: 'password', placeholder: '当前登录口令（解锁私人密钥）', value: password,
+					'aria-label': '当前登录口令', style: { minWidth: 220 },
+					onChange: function (e: any) { setPassword(e.target.value) },
+				}))
+				toolbar.push(React.createElement('button', {
+					key: 'unlock', disabled: password === '',
+					onClick: function () { act('profileUnlock', { password: password }); setPassword('') },
+				}, '解锁'))
 			}
+			toolbar.push(React.createElement('button', {
+				key: 'balance', disabled: state.profiles.length === 0 || state.busy === 'balance',
+				onClick: queryAllBalances,
+			}, state.busy === 'balance' ? '查询中…' : '查余额（全部配置）'))
+			toolbar.push(React.createElement('button', {
+				key: 'default', disabled: selectedProfile() === undefined || selectedProfile().source === 'shared',
+				onClick: function () { act('profileSetDefault', { profileId: state.selected }) },
+			}, '设为默认'))
+			toolbar.push(React.createElement('button', {
+				key: 'use', disabled: selectedProfile() === undefined || selectedProfile().source !== 'shared',
+				onClick: function () {
+					var parts = String(state.selected).split('/')
+					act('shareSelect', { ownerUid: parts[0], profileId: parts[1] })
+				},
+			}, '选用分享'))
+			toolbar.push(React.createElement('button', {
+				key: 'remove', disabled: selectedProfile() === undefined || selectedProfile().source === 'shared',
+				onClick: function () { act('profileRemove', { profileId: state.selected }) },
+			}, '删除'))
+			children.push(React.createElement('div', { key: 'toolbar', className: 'toolbar' }, toolbar))
 
-			if (state.own.length > 0) {
-				children.push(React.createElement('div', { key: 'own-title', style: { fontWeight: 600, margin: '10px 0 6px' } }, '我的配置'))
-				state.own.forEach(function (p: any) {
-					children.push(React.createElement('div', { key: p.profileId, style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '6px 0' } },
-						React.createElement('span', null, (p.label || '未命名') + ' · ' + p.provider + '/' + p.model + ' · Key ' + (p.hint || '—') + (p.isDefault ? ' · 默认' : '')),
-						React.createElement('button', { onClick: function () { act('profileSetDefault', { profileId: p.profileId }) } }, '设为默认'),
-						React.createElement('button', { onClick: function () { showBalance(p.profileId) } }, '查余额'),
-						React.createElement('button', { onClick: function () { act('profileRemove', { profileId: p.profileId }) } }, '删除'),
-						balances[p.profileId] !== undefined ? React.createElement('span', null, balances[p.profileId]) : null))
-				})
-			}
+			// —— 配置表格（不是一条条列 + 重复按钮）——
+			var rows = state.profiles.map(function (p: any) {
+				var id = String(p.profileId)
+				var isShared = p.source === 'shared'
+				return React.createElement('tr', {
+					key: id, onClick: function () { setState(function (prev: any) { return { ...prev, selected: id } }) },
+					style: { cursor: 'pointer', background: state.selected === id ? 'var(--dsw-alias-bg-layer-2, rgba(127,127,127,.12))' : undefined },
+				},
+					React.createElement('td', null, state.selected === id ? '●' : '○'),
+					React.createElement('td', null, p.label || '未命名'),
+					React.createElement('td', null, String(p.model || '—')),
+					React.createElement('td', null, isShared ? '管理员分享' : (p.hint || '—')),
+					React.createElement('td', null, p.isDefault ? '是' : ''),
+					React.createElement('td', null, balances[id] !== undefined ? balances[id] : '—'))
+			})
+			children.push(React.createElement('table', { key: 'table' },
+				React.createElement('thead', null, React.createElement('tr', null,
+					React.createElement('th', null, ''),
+					React.createElement('th', null, '名称'),
+					React.createElement('th', null, '模型'),
+					React.createElement('th', null, 'API Key'),
+					React.createElement('th', null, '默认'),
+					React.createElement('th', null, '余额'))),
+				React.createElement('tbody', null, rows.length === 0
+					? React.createElement('tr', null, React.createElement('td', { colSpan: 6, className: 'muted' }, '还没有配置。未配置时模型调用会被拒绝——不会回退到部署级配置。'))
+					: rows)))
 
-			if (state.shares.length > 0) {
-				children.push(React.createElement('div', { key: 'share-title', style: { fontWeight: 600, margin: '10px 0 6px' } }, '管理员分享给我的'))
-				state.shares.forEach(function (p: any) {
-					var parts = String(p.profileId).split('/')
-					var ownerUid = parts[0], shareId = parts[1]
-					children.push(React.createElement('div', { key: p.profileId, style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '6px 0' } },
-						React.createElement('span', null, (p.label || '分享') + ' · ' + p.model + (p.ownerName ? ' · 来自 ' + p.ownerName : '') + (p.isDefault ? ' · 默认' : '')),
-						React.createElement('button', { onClick: function () { act('shareSelect', { ownerUid: ownerUid, profileId: shareId }) } }, '选用'),
-						React.createElement('button', { onClick: function () { showBalance(p.profileId) } }, '查余额'),
-						balances[p.profileId] !== undefined ? React.createElement('span', null, balances[p.profileId]) : null))
-				})
-			}
-
-			children.push(React.createElement('div', { key: 'form-title', style: { fontWeight: 600, margin: '14px 0 6px' } }, '添加我自己的配置'))
-			children.push(React.createElement('div', { key: 'form', style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' } },
+			// —— 新增配置（放在表格下方，占满一行便于填写）——
+			children.push(React.createElement('div', { key: 'add-title', style: { fontWeight: 600, margin: '14px 0 6px' } }, '添加我自己的配置'))
+			children.push(React.createElement('div', { key: 'add', className: 'toolbar' },
 				React.createElement('input', { placeholder: '名称', value: form.label, onChange: function (e: any) { setForm({ ...form, label: e.target.value }) } }),
 				React.createElement('input', { placeholder: '模型（如 deepseek-chat）', value: form.model, onChange: function (e: any) { setForm({ ...form, model: e.target.value }) } }),
+				React.createElement('input', { placeholder: 'baseURL（可留空用官方地址）', value: form.baseUrl, onChange: function (e: any) { setForm({ ...form, baseUrl: e.target.value }) } }),
 				React.createElement('input', { type: 'password', placeholder: 'API Key', value: form.apiKey, onChange: function (e: any) { setForm({ ...form, apiKey: e.target.value }) } }),
 				React.createElement('button', {
 					disabled: form.model === '' || form.apiKey === '',
 					onClick: function () {
-						act('profileCreate', { label: form.label, provider: 'deepseek', model: form.model, apiKey: form.apiKey })
-						setForm({ label: '', model: 'deepseek-chat', apiKey: '' })
+						act('profileCreate', { label: form.label, provider: 'deepseek', model: form.model, baseUrl: form.baseUrl, apiKey: form.apiKey })
+						setForm({ label: '', model: 'deepseek-chat', baseUrl: '', apiKey: '' })
 					},
 				}, '添加')))
-			children.push(React.createElement('div', { key: 'note', style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 12, marginTop: 10 } },
-				'未配置任何模型（也没有被分享）时，模型调用会被拒绝——不会回退到部署级配置。'))
 
 			return React.createElement('div', { className: 'dshua' }, React.createElement('div', { className: 'card' }, children))
 		}
 
-		function errText(e: any): string {
-			return String((e && (e.message || e.error || e.code)) || e)
+		// ============ 设置导航去重（v0.7.0） ============
+		// 我们的「模型」页与出厂「模型」页同名同区：内容由 priority:-1 决定（我们的胜出），
+		// 但设置导航会把两行都列出来——这里把重复行收敛掉，只保留一行（点哪一行都是同一个内容）。
+		function dedupeSettingsNav(label: string): void {
+			if (typeof document === "undefined" || typeof MutationObserver === "undefined") return
+			var converge = function (): void {
+				var navs = document.querySelectorAll("[role=dialog] nav")
+				for (var i = 0; i < navs.length; i++) {
+					var buttons = navs[i].querySelectorAll("button, [role=button]")
+					var kept = 0
+					for (var j = 0; j < buttons.length; j++) {
+						var element = buttons[j] as HTMLElement
+						if ((element.textContent || "").trim() !== label) continue
+						kept += 1
+						if (kept > 1) {
+							element.style.display = "none"
+							element.setAttribute("data-dshua-dedup", "1")
+						}
+					}
+				}
+			}
+			converge()
+			new MutationObserver(converge).observe(document.body, { childList: true, subtree: true })
 		}
 
 		// ============ 插件管理器：普通用户只读呈现（v0.7.0） ============
@@ -1037,20 +1086,6 @@
 			mark()
 			// 出厂插件管理器是异步渲染的，观察增量节点；有界（同一节点只处理一次）。
 			new MutationObserver(mark).observe(document.body, { childList: true, subtree: true })
-		}
-
-		// ============ 账户页对普通用户不可用（Q7） ============
-		// 原生账户页显示的是**部署者**的 DeepSeek 账号、余额与充值入口，并允许登录/登出——
-		// 那会把整个部署从 DeepSeek 断开。因此对普通用户只呈现说明，服务端同样拒绝 account/*。
-		// 用户自己要看的余额在【模型与密钥】里按各自的配置查询（只返回数字）。
-		function AccountHiddenPage() {
-			return React.createElement('div', { className: 'dshua' },
-				React.createElement('div', { className: 'card' },
-					React.createElement('h2', null, '账户'),
-					React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 14, lineHeight: '22px' } },
-						'此页管理的是部署者的 DeepSeek 账号（登录、余额与充值），仅部署者可访问。',
-						React.createElement('br', null),
-						'你自己的模型与 API Key、以及各自配置可查的余额，请到【模型与密钥】。')))
 		}
 
 		// ============ 分享管理（管理员；v0.7.0） ============
@@ -1252,10 +1287,11 @@
 				if (j.me !== undefined && j.me.role !== 'admin') {
 					slots!.inject('settings.section', function () {
 						return slots!.register(
-							{ name: 'settings.section', id: 'models', order: 10, priority: -1, label: function () { return '模型与密钥' } },
+							{ name: 'settings.section', id: 'models', order: 10, priority: -1, label: function () { return '模型' } },
 							function () { return React.createElement(UserModelsPage) },
 						)
 					})
+					dedupeSettingsNav('模型')
 				}
 				// 管理员：分享管理（把自己的模型分享给指定用户，并看待用量）
 				if (j.me !== undefined && j.me.role === 'admin') {
@@ -1263,15 +1299,6 @@
 						return slots!.register(
 							{ name: 'settings.section', id: 'auth-shares', order: 31, label: function () { return '分享管理' } },
 							function () { return React.createElement(SharesPage) },
-						)
-					})
-				}
-				// 普通用户：账户页替换为说明（Q7）——原生账户页读写的是**部署者**的 DeepSeek 账号与钱包
-				if (j.me !== undefined && j.me.role !== 'admin') {
-					slots!.inject('settings.section', function () {
-						return slots!.register(
-							{ name: 'settings.section', id: 'account', order: -10, priority: -1, label: function () { return '账户' } },
-							function () { return React.createElement(AccountHiddenPage) },
 						)
 					})
 				}
