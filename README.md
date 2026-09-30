@@ -202,11 +202,15 @@ DSH 本身按单用户设计（会话、工作区是机器级数据）。本插�
 |---|---|
 | ![通行密钥卡片](assets/screenshot-passkey.png) | ![用户管理页](assets/screenshot-users.png) |
 
-| 注册成功引导页（绑定第二个因子） |
-|---|
-| ![注册引导页](assets/screenshot-guide.png) |
+| 注册成功引导页（绑定第二个因子） | 模型页（按用户，v0.7.0 表格化） |
+|---|---|
+| ![注册引导页](assets/screenshot-guide.png) | ![模型页](assets/screenshot-models.png) |
 
-> 截图由 `node test/shot.mjs` 在**一次性实例**上生成（见该脚本头部的环境变量说明），
+| 分享管理（管理员，v0.7.0） |
+|---|
+| ![分享管理](assets/screenshot-shares.png) |
+
+> 截图由 `node test/shot.mjs`（基础页）与 `node test/shot-features.mjs`（模型页 / 分享管理）在**一次性实例**上生成（见脚本头部的环境变量说明），
 > 因此图中不含任何真实账号数据。通行密钥相关界面必须在 `localhost` 或域名 + HTTPS 下才会完整渲染。
 
 ## 配置（可选环境变量）
