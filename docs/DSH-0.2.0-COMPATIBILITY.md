@@ -9,10 +9,11 @@
 |---|---|---|---|
 | **目标** | `0.2.0-rc.2` | ✅ **compatible** | 一次性实例实测：插件启动并完成初始化、登录门覆盖页面/`/api`/`/plugins`/WS 升级、端点面按下文实测登记 |
 | 中间 | `0.2.0-rc.1` | ✅ compatible | 2026-09-16 实测：`test:compat:0.2.0` **38/38**（与目标版本同结论） |
-| 中间 | `0.1.7-rc.2` / `0.1.7-rc.1` | ⏳ 待实测 | 同上（该线出现过宿主包改名：`dsh-agent-presets` → `dsh-agent-preset`，但端点命名空间仍为 `agentPresets/*`，实测 `agentPresets/list` 返回 200） |
-| 中间 | `0.1.6-alpha.2` / `0.1.6-alpha.1` | ⏳ 待实测 | 同上 |
+| 中间 | `0.1.7-rc.2` / `0.1.7-rc.1` | ✅ compatible | 2026-09-16 实测：两者均 **38/38**（该线出现过宿主包改名 `dsh-agent-presets` → `dsh-agent-preset`，但端点命名空间仍为 `agentPresets/*`） |
+| 中间 | `0.1.6-alpha.2` | ⚠️ 能力收窄 | 2026-09-16 实测：**37/38**，唯一失败是 `pluginManager/registries` → 404（该 alpha 尚无此端点） |
+| 中间 | `0.1.6-alpha.1` | ❌ **无法评估** | 2026-09-16 实测：**宿主自身启动失败**（上游缺陷，与本插件无关）：`SyntaxError: The requested module '@deepseek-ai/dsh-app-boot' does not provide an export named 'watchUserPatches'` → CLI 无法引导，插件根本未加载 |
 | 中间 | `0.1.5-rc.3` | ✅ compatible（能力面收窄） | 2026-09-16 实测：**34/38**；4 项失败均为该宿主**不存在的端点**（`pluginManager/*`、`permissionPresets/catalog` → 404），其余（登录门、载体桥接、Remote 授权、用户隔离、profile RPC 未解锁拒绝、R2/Q2 阻断）全部通过 |
-| 中间 | `0.1.5-rc.2` / `0.1.5-rc.1` | ⏳ 待实测 | `0.1.5-rc.1` 曾在 v0.6.x 验收通过；v0.7.0 起不再承诺 |
+| 中间 | `0.1.5-rc.2` / `0.1.5-rc.1` | ✅ compatible（能力面收窄） | 2026-09-16 实测：两者均 **34/38**；4 项失败均为该宿主**不存在的端点**（`pluginManager/{listPlugins,listBundles,registries}`、`permissionPresets/catalog` → 404） |
 | legacy | `0.1.1-rc.2` | ❌ **已移除** | dotted `/api/<a>.<b>`、`apiProxy` 事件流、自研 WS 帧编解码全部删除；缺失 `connection.authorizeIndex` 时 **fail-closed** |
 
 > **宿主版本声明的坑（v0.7.0 修复）**：旧声明 `>=0.1.1-rc.2 <0.2.0` 在 npm 的**预发布匹配规则**下

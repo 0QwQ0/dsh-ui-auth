@@ -33,7 +33,8 @@
     "docs:matrix": "node build/docs-matrix.mjs --run SECURITY.md",
     "assets": "node test/shot.mjs",
     "test:pages": "node test/live-user-pages-check.mjs",
-    "test:compat:0.2.0": "node test/live-020-check.mjs"
+    "test:compat:0.2.0": "node test/live-020-check.mjs",
+    "test:compat:matrix": "node test/live-compat-matrix.mjs"
   },
   "dsh": {
     "bundle": {
