@@ -1,7 +1,9 @@
 # DSH 0.2.0 兼容性（v0.7.0 起）
 
+> **面向：**升级与集成者。
+
 > 本文取代 `docs/DSH-0.1.5-COMPATIBILITY.md`（该文对应 v0.7.0 之前的双传输线时代）。
-> 配套设计文档：[按用户隔离的模型与 API Key](RBAC-MODEL-PROFILES.md)、开发基线 [v0.7.0 路线图](V0.7.0-ROADMAP.md)。
+> 配套设计文档：[按用户隔离的模型与 API Key](RBAC-MODEL-PROFILES.md)、开发基线 [v0.7.0 路线图](ROADMAP.md)。
 
 ## 1. 三档兼容矩阵
 

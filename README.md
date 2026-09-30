@@ -1,5 +1,7 @@
 # dsh-ui-auth — DSH Web UI 认证网关插件
 
+> **面向：**首次接触本插件的用户。
+
 [![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 [![npm version](https://img.shields.io/npm/v/dsh-ui-auth.svg)](https://www.npmjs.com/package/dsh-ui-auth)
 [![npm downloads](https://img.shields.io/npm/dm/dsh-ui-auth.svg)](https://www.npmjs.com/package/dsh-ui-auth)
@@ -21,6 +23,18 @@ API 或 WebSocket 通道；登录后可管理用户、邀请码、两步验证�
 并按登录用户隔离会话数据。
 
 适用场景：把 DSH 面板暴露到内网或公网时，需要一个前置认证层，并希望不同使用者之间互不可见。
+
+## 文档导航（按角色）
+
+本 README 只讲**怎么装、怎么登录、怎么用**。更深的主题按你的角色分流（完整清单见 [docs/INDEX.md](docs/INDEX.md)）：
+
+| 你的角色 | 去哪读 |
+|---|---|
+| 第一次用，只想跑起来 | 本文往下读即可 |
+| 负责部署与运行 | [运维手册](docs/OPERATIONS.md)（环境变量、备份、升级、排障） |
+| 做安全审计 | [安全模型](docs/SECURITY.md) + [验证证据](docs/SECURITY-VERIFICATION.md) |
+| 要升级 DSH / 做集成 | [0.2.0 兼容性](docs/DSH-0.2.0-COMPATIBILITY.md) |
+| 想读代码 / 提 PR | [架构](docs/ARCHITECTURE.md) + [贡献指南](CONTRIBUTING.md) |
 
 ## 特性一览
 
@@ -213,42 +227,6 @@ DSH 本身按单用户设计（会话、工作区是机器级数据）。本插�
 > 截图由 `node test/shot.mjs`（基础页）与 `node test/shot-features.mjs`（模型页 / 分享管理）在**一次性实例**上生成（见脚本头部的环境变量说明），
 > 因此图中不含任何真实账号数据。通行密钥相关界面必须在 `localhost` 或域名 + HTTPS 下才会完整渲染。
 
-## 配置（可选环境变量）
-
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| `DSH_AUTH_MAX_FAILS` | `5` | 单来源连续登录失败锁定阈值（正整数；非法值回退默认） |
-| `DSH_AUTH_LOCK_MS` | `30000` | 锁定持续时间（毫秒） |
-| `DSH_AUTH_TRUST_PROXY` | 关 | 设为 `1`/`true`/`yes` 时信任 `X-Forwarded-For`（**取最右**，即最近一层受信代理追加的地址，客户端无法伪造）与 `X-Forwarded-Proto`（用于 Secure Cookie）。**仅在 HTTPS 反向代理之后开启**；默认不信任，避免未配置代理时伪造请求头绕过或污染限流 |
-| `DSH_AUTH_RP_ID` | 自动 | 通行密钥域（WebAuthn RP ID）。默认按浏览器实际访问的主机名推导；只有在反向代理改写了 Host、或需要在子域间共享通行密钥时才需要显式设置（必须是访问域名的后缀） |
-| `DSH_AUTH_ORIGIN` | 自动 | 通行密钥校验的期望来源（如 `https://panel.example.com`）。反代终止 TLS 且插件看到的 Host/协议不是浏览器所见时设置 |
-| `DSH_AUTH_RP_NAME` | `DeepSeek Harness` | 通行密钥在系统弹窗中显示的账号名 |
-
-面板进程启动时读取，修改后需重启面板。示例：
-
-```powershell
-$env:DSH_AUTH_MAX_FAILS = '10'; $env:DSH_AUTH_LOCK_MS = '60000'; $env:DSH_AUTH_TRUST_PROXY = '1'
-```
-
-```bash
-export DSH_AUTH_MAX_FAILS=10 DSH_AUTH_LOCK_MS=60000 DSH_AUTH_TRUST_PROXY=1
-```
-
-## 数据与持久化
-
-| 内容 | 位置 | 说明 |
-|---|---|---|
-| 用户、角色、资料、密码哈希、TOTP 密钥、通行密钥（公钥）、邀请码 | DSH 凭据库 `~/.dsh/.credentials.yaml` 中的 `dsh-auth/*` 记录 | 重启后保留；**不保存明文密码，也不保存通行密钥私钥**（私钥只存在于用户设备） |
-| 登录会话 | 面板进程工作目录下的 `dsh-ui-auth-sessions.json` | 只存 Token 的 SHA-256 哈希；未过期会话重启后免登录恢复 |
-| 审计日志 | 面板进程工作目录下的 `dsh-ui-auth-audit.jsonl` | JSONL，每行含时间、操作者、动作、目标等字段 |
-| 首次启动引导文件 | 面板进程工作目录下的 `dsh-ui-auth-bootstrap.txt` | 任一用户改密成功后自动删除 |
-
-**备份**：备份 `~/.dsh/.credentials.yaml` 即可保留全部账号数据。
-
-**彻底清空**：删除 `~/.dsh/.credentials.yaml` 中 `dsh-auth:` 下的记录，并删除上述工作目录里的
-`dsh-ui-auth-sessions.json`、`dsh-ui-auth-audit.jsonl` 与 `dsh-ui-auth-bootstrap.txt`，然后重启面板
-（用户表为空时会重新生成新的管理员与随机密码）。
-
 ## 卸载
 
 ```bash
@@ -273,7 +251,7 @@ dsh plugin --profile web remove dsh-ui-auth
   本插件才是前置认证层，两者叠加使用。
 - **隔离强度的上限**：本插件按登录用户隔离 DSH 的会话/工作区数据；它不改变 DSH 自身的进程权限模型，
   也不能隔离第三方插件自己的数据。多租户级别的强隔离需要 DSH 侧的支持。
-- 更完整的安全分析（威胁模型、用例矩阵、残余风险与部署加固清单）见 [SECURITY.md](SECURITY.md)。
+- 更完整的安全分析（威胁模型、用例矩阵、残余风险与部署加固清单）见 [SECURITY.md](docs/SECURITY.md)。
 
 > **已知边界（v0.7.0）**：DSH 0.2.0 的客户端把 `/api/remote.mux`（WebSocket）当作主连接通道，
 > 普通用户也需要它，因此网关在**校验会话之后**把升级请求交给宿主处理——
@@ -316,6 +294,12 @@ dsh plugin --profile web remove dsh-ui-auth
 
 自检：`node test/i18n.test.mjs`（词典完整性 / 替换行为 / Accept-Language 解析）与
 `DSH020_URL=... node test/live-i18n-check.mjs`（真实实例上切 en 再切回 zh 的端到端检查）。
+
+## 配置与运维
+
+环境变量、数据落盘位置、备份恢复、升级回滚与排障，全部收在 **[运维手册](docs/OPERATIONS.md)**（面向部署者）。
+这里只强调两点：**首次启动生成的 `dsh-ui-auth-bootstrap.txt` 用完即删**；
+**宿主缺少现代传输能力时插件会 fail-closed**（面板不可访问），这是有意设计而非故障。
 
 ## DSH 版本兼容性
 

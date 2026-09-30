@@ -1,5 +1,7 @@
 # DSH STORE 证据与声明（dsh-ui-auth 0.6.4）
 
+> **面向：**DSH STORE 审核员。
+
 本文档是 **作者侧整改证据**，回应 DSH STORE Catalog 自动检查（
 [issue #327](https://github.com/AI-Scarlett/DSH-Store/issues/327)，`catalog-blocked`）。
 它**不是**安全审计，也不代表 DSH STORE 的运行时验收——自动门禁只读固定 Commit 的
