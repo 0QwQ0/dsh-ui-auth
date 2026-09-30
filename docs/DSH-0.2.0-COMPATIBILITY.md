@@ -92,3 +92,10 @@ node test/live-020-check.mjs
 - 任何版本都**不会**因为缺失现代能力而放行：`connection.authorizeIndex` 缺失即 fail-closed。
 
 结果写回 §1 表格（结论 + 日期 + 通过数），并同步 `CHANGELOG.md` 的"已知边界"。
+
+## 升级（WebSocket）与 mux 的处理（实测修订）
+
+`/api/remote.mux` 是 0.2.0 客户端的**主连接通道**，且**普通用户也需要它**。
+v0.6.x 时代的自研 mux（`gateUp` 内的 `WebSocketServer`）与 0.2.0 客户端协议不兼容，
+会让设置页一直「重新连接中」（管理员与普通用户都会复现）。现改为：**校验本插件会话后，把升级请求转交宿主处理**。
+代价见 README「已知边界」：该通道上的逐帧按用户过滤尚未实现。
