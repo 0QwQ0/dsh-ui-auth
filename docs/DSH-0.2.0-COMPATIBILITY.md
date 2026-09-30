@@ -8,10 +8,11 @@
 | 档位 | DSH 版本 | 结论 | 依据 |
 |---|---|---|---|
 | **目标** | `0.2.0-rc.2` | ✅ **compatible** | 一次性实例实测：插件启动并完成初始化、登录门覆盖页面/`/api`/`/plugins`/WS 升级、端点面按下文实测登记 |
-| 中间 | `0.2.0-rc.1` | ⏳ 待实测 | 不刻意适配；矩阵实测后填 compatible/degraded/unsupported |
+| 中间 | `0.2.0-rc.1` | ✅ compatible | 2026-09-16 实测：`test:compat:0.2.0` **38/38**（与目标版本同结论） |
 | 中间 | `0.1.7-rc.2` / `0.1.7-rc.1` | ⏳ 待实测 | 同上（该线出现过宿主包改名：`dsh-agent-presets` → `dsh-agent-preset`，但端点命名空间仍为 `agentPresets/*`，实测 `agentPresets/list` 返回 200） |
 | 中间 | `0.1.6-alpha.2` / `0.1.6-alpha.1` | ⏳ 待实测 | 同上 |
-| 中间 | `0.1.5-rc.3` / `0.1.5-rc.2` / `0.1.5-rc.1` | ⏳ 待实测 | `0.1.5-rc.1` 曾在 v0.6.x 验收通过；v0.7.0 起不再承诺 |
+| 中间 | `0.1.5-rc.3` | ✅ compatible（能力面收窄） | 2026-09-16 实测：**34/38**；4 项失败均为该宿主**不存在的端点**（`pluginManager/*`、`permissionPresets/catalog` → 404），其余（登录门、载体桥接、Remote 授权、用户隔离、profile RPC 未解锁拒绝、R2/Q2 阻断）全部通过 |
+| 中间 | `0.1.5-rc.2` / `0.1.5-rc.1` | ⏳ 待实测 | `0.1.5-rc.1` 曾在 v0.6.x 验收通过；v0.7.0 起不再承诺 |
 | legacy | `0.1.1-rc.2` | ❌ **已移除** | dotted `/api/<a>.<b>`、`apiProxy` 事件流、自研 WS 帧编解码全部删除；缺失 `connection.authorizeIndex` 时 **fail-closed** |
 
 > **宿主版本声明的坑（v0.7.0 修复）**：旧声明 `>=0.1.1-rc.2 <0.2.0` 在 npm 的**预发布匹配规则**下
@@ -66,3 +67,27 @@
 | 全链 | `npm test`（含 `security-suite` 126/126、`host-smoke`、`login-page-check`）与 `npm run store:check`（20/0） |
 
 > 未实测的中间版本**不会**被标为 compatible；矩阵填表以实际运行为准，详见 `docs/V0.7.0-ROADMAP.md` 的 WP8。
+
+## 6. 如何测一个矩阵数据点（可复现）
+
+每个版本用一个**一次性实例**（把 `<ver>` 换掉，端口逐次递增）：
+
+```powershell
+$ev = "$env:TEMP\dsh-<ver>"
+npm install --prefix "$ev\cli" "@deepseek-ai/dsh@<ver>"
+$env:DSH_HOME = "$ev\home"
+& "$ev\cli\node_modules\.bin\dsh.cmd" plugin --profile web add '<repo 或 npm 包>'
+& "$ev\cli\node_modules\.bin\dsh.cmd" web --port 3203 --no-open
+$env:DSH020_URL = 'http://127.0.0.1:3203'
+$env:DSH020_BOOTSTRAP = "$ev\work\dsh-ui-auth-bootstrap.txt"
+node test/live-020-check.mjs
+```
+
+判读规则：
+- **目标版本**期望 38/38；
+- **中间版本**缺少 0.2.0 才有的端点/能力时会**预期失败**（例如 0.1.5 没有 `pluginManager/*`、`webServer.register`、
+  `registerDeepSeekProvider`）——这类失败记为 `degraded`/`unsupported`，**不是回归**；插件会走防御性回退
+  （闸门内处理 `/auth/*`）并打印明确日志；
+- 任何版本都**不会**因为缺失现代能力而放行：`connection.authorizeIndex` 缺失即 fail-closed。
+
+结果写回 §1 表格（结论 + 日期 + 通过数），并同步 `CHANGELOG.md` 的"已知边界"。
