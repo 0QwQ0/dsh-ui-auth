@@ -1328,11 +1328,6 @@ const COOKIE_NAME = 'dsh_auth_' + (() => {
         '.or:before{background:#dfe3ea}.or span{background:#ffffff}' +
         '.hint{color:#6b7386}.hint.warn{color:#a3690f}' +
         '.foot{color:#8a92a0}' +
-        'input.pw-ok{border-color:#2ecc71;box-shadow:0 0 6px 2px rgba(46,204,113,.35)}' +
-        'input.pw-warn{border-color:#f1c40f;box-shadow:0 0 6px 2px rgba(241,196,15,.35)}' +
-        'input.pw-bad{border-color:#e74c3c;box-shadow:0 0 6px 2px rgba(231,76,60,.35)}' +
-        'input.locked{background:#eef1f5;opacity:.75}' +
-        '.pw-hint{font-size:12px;color:#8a92a0;margin:-4px 0 8px}' +
         '.foot a{color:#3b6ee0}}' +
         '</style></head><body><div class="card">' +
         '<div class="brand">DeepSeek Harness</div>' +
@@ -2077,6 +2072,12 @@ const COOKIE_NAME = 'dsh_auth_' + (() => {
         'button:hover{background:#315fd0}' +
         '.foot{color:#8a92a0}' +
         '.foot a{color:#3b6ee0}}' +
+        // 强度/锁定配色放在**媒体查询之外**：否则只有浅色模式生效（深色下边框永远不变色）
+        'input.pw-ok{border-color:#2ecc71!important;box-shadow:0 0 6px 2px rgba(46,204,113,.35)}' +
+        'input.pw-warn{border-color:#f1c40f!important;box-shadow:0 0 6px 2px rgba(241,196,15,.35)}' +
+        'input.pw-bad{border-color:#e74c3c!important;box-shadow:0 0 6px 2px rgba(231,76,60,.35)}' +
+        'input.locked{background:#eef1f5!important;opacity:.75}' +
+        '.pw-hint{font-size:9px;line-height:14px;color:#8b93a7;margin:3px 0 8px}' +
         '</style></head><body><div class="card">' +
         '<div class="brand">DeepSeek Harness</div>' +
         '<div class="sub">注册新账号（需要有效邀请码）</div>' +
