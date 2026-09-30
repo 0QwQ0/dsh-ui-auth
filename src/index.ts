@@ -38,6 +38,7 @@ import type { PasskeyRelyingParty, RelyingPartyIssue, StoredPasskey } from './we
 import { ProfileStore } from './model-profiles.js'
 import { KekRegistry } from './profile-kek.js'
 import { ProfileService } from './profile-service.js'
+import { UserRouteRegistry, createDeepSeekRegistrar, routeIdOf } from './user-routes.js'
 
 export const name = 'dsh-ui-auth'
 export const inject = ['webServer', 'connection']
@@ -611,6 +612,84 @@ export function apply(ctx: CordisContext): void {
       }
       return profileServiceCache
     }
+
+    // ============ R1-ii：按用户配置的 provider 路由 ============
+    // 每条"自有配置"与"对外分享的配置"对应宿主里的一条 provider 路由；路由的 resolveAuth 在调用瞬间
+    // 从我们自己的加密存储解密 Key（私有→会话 KEK；分享→服务端主密钥）。宿主缺包时明确报错并停用该路径，
+    // 不影响其余功能（Q2 阻断仍然生效）。
+    let routeRegistry: UserRouteRegistry | null = null
+    /** profileId → 归属 uid，用于同步时释放已失效的路由。 */
+    const routeOwner = new Map<string, string>()
+
+    async function syncRoutesFor(uid: string): Promise<void> {
+      const registry = routeRegistry
+      const service = profileService()
+      if (registry === null || service === undefined) return
+      const desired = new Set<string>()
+      try {
+        for (const meta of await service.listProfiles(uid)) {
+          if (meta.source !== 'own') continue
+          desired.add(meta.profileId)
+          registry.ensure({
+            profileId: meta.profileId,
+            routeId: routeIdOf(meta.profileId),
+            label: meta.label,
+            model: meta.model,
+            ...(meta.baseUrl === undefined ? {} : { baseUrl: meta.baseUrl }),
+            resolveKey: () => service.resolveOwnPrivateKey(uid, meta.profileId),
+          })
+          routeOwner.set(meta.profileId, uid)
+        }
+        for (const shared of await service.listGrantedProfiles(uid)) {
+          desired.add(shared.profileId)
+          registry.ensure({
+            profileId: shared.profileId,
+            routeId: routeIdOf(shared.profileId),
+            label: shared.label,
+            model: shared.model,
+            // 分享配置由服务端主密钥托管：所有者离线时被授权者仍可调用。
+            resolveKey: () => service.resolveSharedKeyUnattended(uid, shared.profileId),
+          })
+          routeOwner.set(shared.profileId, uid)
+        }
+        // 释放该用户名下已不存在的配置（删除配置、取消分享）
+        for (const [profileId, owner] of [...routeOwner.entries()]) {
+          if (owner !== uid || desired.has(profileId)) continue
+          registry.dispose(profileId)
+          routeOwner.delete(profileId)
+        }
+      } catch (err) {
+        console.error('[dsh-ui-auth] 同步用户 provider 路由失败: ' + String(err))
+      }
+    }
+
+    async function syncAllRoutes(): Promise<void> {
+      const service = profileService()
+      if (service === undefined) return
+      for (const username of state.users.keys()) {
+        const uid = await service.uidOfName(username)
+        if (uid !== undefined) await syncRoutesFor(uid)
+      }
+    }
+
+    void (async () => {
+      const register = await createDeepSeekRegistrar(ctx)
+      if (register === undefined) {
+        console.error('[dsh-ui-auth] 宿主未提供 dsh-llm-deepseek / dsh-launch-environment：'
+          + '按用户模型的调用路径（R1-ii）不可用；界面与存储隔离仍然生效，未配置的用户继续被阻断。')
+        return
+      }
+      routeRegistry = new UserRouteRegistry({
+        register,
+        onError: (message, error) => console.error(`[dsh-ui-auth] ${message}: ${String(error)}`),
+      })
+      ctx.effect(() => () => {
+        routeRegistry?.disposeAll()
+        routeRegistry = null
+        routeOwner.clear()
+      }, 'dsh-ui-auth: 释放用户 provider 路由')
+      await syncAllRoutes()
+    })()
 
     /**
      * 用户记录边界规范化：任何读入或写出的记录都经过这里。
@@ -2210,6 +2289,7 @@ export function apply(ctx: CordisContext): void {
               ...(str(args.baseUrl, 200) === '' ? {} : { baseUrl: str(args.baseUrl, 200) }),
               apiKey: typeof args.apiKey === 'string' ? args.apiKey : '',
             })
+            await syncRoutesFor(uid)
             audit('profileCreate', who, who)
             sendJson(res, 200, { ok: true, profile: meta })
           })
@@ -2224,6 +2304,7 @@ export function apply(ctx: CordisContext): void {
               ...(typeof args.apiKey === 'string' && args.apiKey !== '' ? { apiKey: args.apiKey } : {}),
             })
             if (updated === undefined) { sendJson(res, 404, { error: '配置不存在' }); return }
+            await syncRoutesFor(uid)
             audit('profileUpdate', who, who)
             sendJson(res, 200, { ok: true, profile: updated })
           })
@@ -2231,7 +2312,11 @@ export function apply(ctx: CordisContext): void {
         case 'profileRemove':
           await runProfile(async (service, uid) => {
             const removed = await service.removeProfile(uid, str(args.profileId, 80))
-            if (removed) audit('profileRemove', who, who)
+            if (removed) {
+              routeRegistry?.dispose(str(args.profileId, 80))
+              routeOwner.delete(str(args.profileId, 80))
+              audit('profileRemove', who, who)
+            }
             sendJson(res, removed ? 200 : 404, removed ? { ok: true } : { error: '配置不存在' })
           })
           return
@@ -2263,6 +2348,7 @@ export function apply(ctx: CordisContext): void {
           if (targetUid === undefined) { sendJson(res, 404, { error: '目标用户不存在或尚未分配配置标识' }); return }
           await runProfile(async (service, uid) => {
             const done = await service.grantShare(uid, who, targetUid, str(args.profileId, 80))
+            if (done) await syncRoutesFor(uid)
             if (done) audit('shareGrant', who, target)
             sendJson(res, done ? 200 : 404, done ? { ok: true } : { error: '分享配置不存在' })
           })
@@ -2743,9 +2829,11 @@ export function apply(ctx: CordisContext): void {
             const uid = await new ProfileStore(store).uidOf(principal.username)
             if (uid === undefined) return { providers: [], models: [] }
             const profiles = await service.listProfiles(uid)
+            // provider 必须是**宿主里的路由 id**（R1-ii：每条配置一条路由）；收到的分享形如 ownerUid/profileId。
+            const routeOf = (meta: { profileId: string }) => routeIdOf(String(meta.profileId).split('/').pop() ?? meta.profileId)
             return {
-              providers: [...new Set(profiles.map(profile => profile.provider))],
-              models: profiles.map(profile => ({ provider: profile.provider, model: profile.model })),
+              providers: [...new Set(profiles.map(routeOf))],
+              models: profiles.map(meta => ({ provider: routeOf(meta), model: meta.model })),
             }
           },
         })

@@ -29,6 +29,7 @@
     "src/modern-policy.ts",
     "src/model-profiles.ts",
     "src/profile-kek.ts",
-    "src/profile-service.ts"
+    "src/profile-service.ts",
+    "src/user-routes.ts"
   ]
 }
