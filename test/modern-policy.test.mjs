@@ -237,16 +237,19 @@ test('R2: a per-user entitlement trims the catalog and gates model selection', a
 
   // 模型目录：丢掉未授权 provider 分组与未授权模型；未知形状原样返回
   const catalog = {
-    providers: [
-      { id: 'deepseek', models: [{ id: 'deepseek-chat' }, { id: 'deepseek-reasoner' }] },
-      { id: 'openai', models: [{ id: 'gpt-4o' }] },
+    // 真实 0.2.0 形状（实测）：default + routableProviders + groups
+    default: { provider: 'deepseek', model: 'deepseek-chat' },
+    routableProviders: ['deepseek', 'openai'],
+    groups: [
+      { id: 'deepseek', name: 'DeepSeek', models: [{ id: 'deepseek-chat' }, { id: 'deepseek-reasoner' }] },
+      { id: 'openai', name: 'OpenAI', models: [{ id: 'gpt-4o' }] },
     ],
-    defaultSelection: { provider: 'deepseek', model: 'deepseek-chat' },
   }
   const trimmed = await restricted.result(alice, 'session/modelCatalog', catalog)
-  assert.deepEqual(trimmed.providers.map(group => group.id), ['deepseek'])
-  assert.deepEqual(trimmed.providers[0].models.map(model => model.id), ['deepseek-chat'])
-  assert.deepEqual(trimmed.defaultSelection, catalog.defaultSelection, '其它字段保持原样')
+  assert.deepEqual(trimmed.groups.map(group => group.id), ['deepseek'])
+  assert.deepEqual(trimmed.groups[0].models.map(model => model.id), ['deepseek-chat'])
+  assert.deepEqual(trimmed.default, catalog.default, '授权内的默认值保留')
+  assert.deepEqual(trimmed.routableProviders, ['deepseek'], 'routableProviders 同步裁剪')
 
   // provider 列表裁剪
   const providers = [{ id: 'deepseek' }, { id: 'openai' }]
@@ -262,6 +265,6 @@ test('R2: a per-user entitlement trims the catalog and gates model selection', a
   // 管理员不受裁剪；未提供 entitlement 时行为与以前一致
   const admin = { username: 'root', role: 'admin' }
   assert.deepEqual((await restricted.result(admin, 'session/modelCatalog', catalog)), catalog)
-  assert.deepEqual(await restricted.result(alice, 'session/modelCatalog', { providers: 'unknown-shape' }), { providers: 'unknown-shape' })
+  assert.deepEqual(await restricted.result(alice, 'session/modelCatalog', { groups: 'unknown-shape' }), { groups: 'unknown-shape' })
   assert.deepEqual(await policy.result(alice, 'session/modelCatalog', catalog), catalog, '未配置授权时不裁剪')
 })
