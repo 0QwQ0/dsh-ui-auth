@@ -34,7 +34,7 @@ const report = readFileSync(reportPath, 'utf8')
 // 分类中文名：优先复用报告里已有的，新分类在此登记
 const names = {}
 for (const match of report.matchAll(/^###\s+(\S+)\s+路\s+([^（(]+)/gm)) names[match[1]] = match[2].trim()
-Object.assign(names, { PROFILE: '密钥存储与隔离', SHARE: '分享与授权', RPC: '接口鉴权', I18N: '本地化安全' })
+Object.assign(names, { PROFILE: '密钥存储与隔离', SHARE: '分享与授权', RPC: '接口鉴权', I18N: '本地化安全', 'WS-ISO': 'WebSocket 逐帧归属隔离（Issue #6）' })
 
 const blocks = Object.entries(summary.categories).map(([category, group]) => [
   `### ${category} 路 ${names[category] ?? category}（${group.total} 项，${group.passed}/${group.total} 通过）`,

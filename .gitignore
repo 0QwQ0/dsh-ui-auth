@@ -11,3 +11,7 @@ Thumbs.db
 # 运行时产物（由插件在首次启动生成，不应入库）
 dsh-ui-auth-bootstrap.txt
 dsh-ui-auth-init.log
+dsh-ui-auth-audit.jsonl
+dsh-ui-auth-sessions.json
+dsh-ui-auth-users.json
+.security-suite-result.json

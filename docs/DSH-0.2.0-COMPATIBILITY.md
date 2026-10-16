@@ -63,7 +63,8 @@
 
 | 项目 | 证据 |
 |---|---|
-| 启动与闸门 | 0.2.0-rc.2 一次性实例：插件完成初始化、未登录访问 `/` → 302 `/auth/login`、`/api/*` 未认证 → 401、`/api/remote.mux` 普通用户 → 403 |
+| 启动与闸门 | 0.2.0-rc.2 一次性实例：插件完成初始化、未登录访问 `/` → 302 `/auth/login`、`/api/*` 未认证 → 401、未认证的 `/api/remote.mux` 升级被销毁 |
+| mux 归属过滤 | 双身份真实浏览器 A/B（`npm run test:mux:leak`）：直通时普通用户可见 15 个管理员工作区，代理下 0（管理员 16 不受限）；`test/security-suite.mjs` 的 `WS-ISO` 13 项为过滤纯函数的行为回归 |
 | 端点面 | 普通用户逐个端点实测（200/403 分类）并据此登记策略；单测 `test/modern-policy.test.mjs` |
 | 密钥隔离 | `test/profile-crypto.test.mjs`（INV-4：主密钥解不开私有配置；存储无明文）、`test/profile-envelope.test.mjs`（信封、AAD、改密重包裹） |
 | 服务层语义 | `test/profile-service.test.mjs`（Q2 阻断、Q6 撤销 fail-closed、Q11(c) 继承、分享可见性、用量、余额缓存/限流） |
@@ -99,5 +100,10 @@ node test/live-020-check.mjs
 
 `/api/remote.mux` 是 0.2.0 客户端的**主连接通道**，且**普通用户也需要它**。
 v0.6.x 时代的自研 mux（`gateUp` 内的 `WebSocketServer`）与 0.2.0 客户端协议不兼容，
-会让设置页一直「重新连接中」（管理员与普通用户都会复现）。现改为：**校验本插件会话后，把升级请求转交宿主处理**。
-代价见 README「已知边界」：该通道上的逐帧按用户过滤尚未实现。
+会让设置页一直「重新连接中」（管理员与普通用户都会复现）。v0.7.0 曾改为**把升级请求转交宿主**，
+但这让宿主按"单用户"把**全部**工作区与会话推给每个连接（Issue #6）。
+**v0.7.1 起**：校验本插件会话后，由 `proxyMuxUpgrade` 在插件内**透明代理**该升级，
+宿主 → 客户端方向的帧经 `projectMuxFrame()` 按登录归属裁决（丢弃/裁剪他人数据，管理员不受限，
+无归属字段的帧放行）。代理**不解析 mux 语义**，只读 JSON 里的归属字段，因此与 0.2.0 协议保持兼容。
+排障退避：`DSH_AUTH_MUX_PROXY=0`（退避后 Issue #6 会重现）。
+验证：`PROBE_URL=http://127.0.0.1:<port> npm run test:mux:leak`（双身份真实浏览器 A/B）。

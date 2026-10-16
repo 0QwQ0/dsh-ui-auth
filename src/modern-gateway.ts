@@ -245,6 +245,75 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/**
+ * 按**登录归属**裁决一条「宿主 → 客户端」的 mux 帧（Issue #6 的核心修复，纯函数便于回归测试）：
+ * 返回 `undefined` 表示丢弃；返回新对象表示改写后转发；返回原对象表示原样转发。
+ *
+ * 为什么必须做在这里：宿主把 mux 通道当「单用户」用，`workspace/follow` 会把**全部**工作区推给
+ * 每个连接。实测泄漏形态有三种，且都不含顶层 `sessionId`：
+ *   - `{type:'baseline', value:{items:[{workspaceId…}]}}`（初始全量，最容易漏掉）
+ *   - `{type:'upsert', workspace:{workspaceId…}}`
+ *   - `{type:'order', workspaceIds:[…]}`（列表，需要**裁剪**而不是丢弃）
+ * 管理员不受限；普通用户只看得到自己拥有的会话/工作区。
+ */
+export function projectMuxFrame(
+  who: Principal,
+  frame: JsonObject,
+  lookup: { session(id: string): string; workspace(id: string): string },
+): JsonObject | undefined {
+  const entitledSession = (id: string): boolean => who.role === 'admin' || lookup.session(id) === who.username
+  const entitledWorkspace = (id: string): boolean => {
+    if (who.role === 'admin') return true
+    const owner = lookup.workspace(id)
+    return typeof owner === 'string' && owner !== '' && owner === who.username
+  }
+  const value = object(frame.value) ? (frame.value as JsonObject) : undefined
+  if (value === undefined) return frame
+  const sessionId = typeof value.sessionId === 'string' ? value.sessionId : undefined
+  if (sessionId !== undefined && sessionId !== '' && !entitledSession(sessionId)) return undefined
+  if (object(value.workspace)) {
+    const inner = value.workspace as JsonObject
+    const id = typeof inner.workspaceId === 'string' ? inner.workspaceId : undefined
+    if (id !== undefined && id !== '' && !entitledWorkspace(id)) return undefined
+  }
+  const bare = typeof value.workspaceId === 'string' ? value.workspaceId : undefined
+  if (bare !== undefined && bare !== '' && !entitledWorkspace(bare)) return undefined
+  if (who.role !== 'admin' && Array.isArray(value.workspaceIds)) {
+    const all = value.workspaceIds as unknown[]
+    const kept = all.filter((x): x is string => typeof x === 'string' && entitledWorkspace(x))
+    if (kept.length !== all.length) return { ...frame, value: { ...value, workspaceIds: kept } }
+  }
+  if (value.type === 'baseline' && object(value.value)) {
+    const body = value.value as JsonObject
+    let changed = false
+    const nextBody: JsonObject = { ...body }
+    if (Array.isArray(body.items)) {
+      const items = body.items as unknown[]
+      const kept = items.filter((entry) => {
+        if (!object(entry)) return true
+        const item = entry as JsonObject
+        const wid = typeof item.workspaceId === 'string' ? item.workspaceId : undefined
+        if (wid !== undefined && wid !== '' && !entitledWorkspace(wid)) return false
+        const sid = typeof item.sessionId === 'string' ? item.sessionId : undefined
+        return !(sid !== undefined && sid !== '' && !entitledSession(sid))
+      })
+      if (kept.length !== items.length) { changed = true; nextBody.items = kept }
+    }
+    // `projections` 的键语义未知：只在**条目自身**携带未授权 sessionId 时剔除，绝不按未知键名猜测。
+    if (object(body.projections)) {
+      const projections = body.projections as JsonObject
+      const kept = Object.entries(projections).filter(([, entry]) => {
+        if (!object(entry)) return true
+        const sid = typeof (entry as JsonObject).sessionId === 'string' ? (entry as JsonObject).sessionId as string : undefined
+        return !(sid !== undefined && sid !== '' && !entitledSession(sid))
+      })
+      if (kept.length !== Object.keys(projections).length) { changed = true; nextBody.projections = Object.fromEntries(kept) }
+    }
+    if (changed) return { ...frame, value: { ...value, value: nextBody } }
+  }
+  return frame
+}
+
 export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth): ModernGateway {
   const policy: ModernPolicy = createModernPolicy(auth, {
     ...(auth.entitlement === undefined ? {} : { entitlement: auth.entitlement }),
@@ -600,6 +669,10 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
   const entitledTo = (who: Principal, sessionId: string): boolean =>
     who.role === 'admin' || auth.session(sessionId) === who.username
 
+  /** 逐帧归属过滤的纯函数实现在模块级（`projectMuxFrame`），这里只绑定本网关的归属查询。 */
+  const projectFrame = (who: Principal, frame: JsonObject): JsonObject | undefined =>
+    projectMuxFrame(who, frame, auth)
+
   /**
    * 代理一次 mux 升级。握手交给 `ws`（因此客户端看到的仍是标准 WS 握手），
    * `host`/`cookie` 用于连回宿主自己的 mux（与改动前直通宿主的行为保持一致）。
@@ -639,8 +712,23 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
           const sessionId = fieldOf(frame, 'sessionId')
           // 他人会话的帧**不转发**（这是 #6 的泄漏点）
           if (sessionId !== undefined && !entitledTo(info.who, sessionId)) return
+          const projected = projectFrame(info.who, frame)
+          if (projected === undefined) {
+            if (process.env.DSH_AUTH_DEBUG_STREAM === '1') {
+              console.error(`[dsh-ui-auth] 代理丢弃帧 who=${info.who.username}/${info.who.role} frame=${raw.slice(0, 200)}`)
+            }
+            return
+          }
           const eventId = fieldOf(frame, 'eventId')
           if (eventId !== undefined) correlation.events.add(eventId)
+          if (projected !== frame) {
+            const text = JSON.stringify(projected)
+            if (process.env.DSH_AUTH_DEBUG_STREAM === '1') {
+              console.error(`[dsh-ui-auth] 代理改写帧 who=${info.who.username}/${info.who.role} 原=${raw.slice(0, 160)} 改=${text.slice(0, 160)}`)
+            }
+            try { client.send(text) } catch (error) { /* ignore */ }
+            return
+          }
         }
         try { client.send(raw) } catch (error) { /* ignore */ }
       })

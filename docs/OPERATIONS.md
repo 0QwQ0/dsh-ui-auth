@@ -104,4 +104,6 @@ export DSH_AUTH_MAX_FAILS=10 DSH_AUTH_LOCK_MS=60000 DSH_AUTH_TRUST_PROXY=1
 - [ ] 检查限流/锁定参数符合你的风险偏好
 - [ ] 普通用户**只**通过邀请码创建；不再需要注册时关闭入口
 - [ ] 备份 `DSH_HOME`，并确认恢复流程演练过
-- [ ] 若为**互不信任的多用户**部署：阅读 [SECURITY](SECURITY.md) §6 的残余风险（mux 逐帧过滤未实现）后再决定是否暴露
+- [ ] 若为**互不信任的多用户**部署：确认 `DSH_AUTH_MUX_PROXY` 未被设为 `0`，并跑一次
+      `PROBE_URL=http://127.0.0.1:<port> npm run test:mux:leak` 看是否为 **NO-LEAK**（普通用户可见工作区数必须为 0）；
+      背景见 [SECURITY](SECURITY.md) §6.2（mux 逐帧归属过滤，Issue #6）

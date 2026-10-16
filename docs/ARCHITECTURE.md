@@ -44,7 +44,11 @@
                            └─ 放行 → 转发宿主；policy.result() 按用户投影返回值
 ```
 
-**升级（WebSocket）**：`gateUp` 校验会话后**把升级请求转交宿主**（不再自建 mux——见 [SECURITY](SECURITY.md) §6 的残余风险）。
+**升级（WebSocket）**：`gateUp` 校验会话后，`/api/remote.mux` 的升级由 `proxyMuxUpgrade` **在本插件内透明代理**：
+以 `ws` 客户端连回宿主自己的 mux（上游连接带 nonce 头，防自我递归），帧原样转发，但在**宿主 → 客户端**方向用
+`projectMuxFrame(who, frame, auth)` 按登录归属裁决（丢弃/裁剪他人的工作区与会话帧，管理员不受限，无归属字段的帧放行）。
+不自己实现 mux 语义是刻意的：宿主的事件广播挂在它自己的 mux 连接上，自研 mux 收不到 emit 帧（UI 会一直「重新连接中」）。
+`DSH_AUTH_MUX_PROXY=0` 可退避为直通（跨用户泄漏会重现）。
 
 ## 4. 数据模型与存储键
 

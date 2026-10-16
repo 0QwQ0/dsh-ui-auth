@@ -238,4 +238,4 @@ WP4 的会话密钥生命周期**据此确定**（避免在内存中长期持有
 | R1-ii 按用户模型调用 | ✅ | 每配置一条 provider 路由；`resolveAuth` 在调用瞬间解密（私有→会话 KEK、分享→主密钥） |
 | 余额 | ✅ | 批量接口 `balanceQueryAll`（请求内顺序查询、整批节流一次）；**未解锁提示「需先解锁」** |
 | 免解锁查余额 / 调用 | ❌ 有意不做 | 需服务端托管 Key（放弃 E2E）；所有者选择保持现状 |
-| mux 逐帧按用户过滤 | ❌ 未实现 | 0.2.0 客户端以 mux 为主通道且普通用户也需要；升级已转交宿主，见 README 已知边界 |
+| mux 逐帧按用户过滤 | ✅ v0.7.1 | 插件内透明代理 `/api/remote.mux`，`projectMuxFrame()` 按归属裁决（`baseline.items` / `upsert.workspace` / `order.workspaceIds` / `sessionId`）；回归见 `WS-ISO` 与 `npm run test:mux:leak` |

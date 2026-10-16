@@ -7,6 +7,7 @@
 import { EventEmitter } from 'node:events'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { apply, readLockConfig, clientIp, totpCodeAt } from '../lib/index.js'
+import { projectMuxFrame } from '../lib/modern-gateway.js'
 
 // 会话 Cookie 名由插件按 DSH_HOME 派生（同一实例内稳定、实例间不同）；测试用同一公式。
 const COOKIE_NAME = 'dsh_auth_' + (() => {
@@ -769,19 +770,8 @@ check('DEPLOY', '登录失败锁定按源 IP（反向代理下聚合，README �
 }
 
 // ==================== 汇总 ====================
-const byCategory = {}
-for (const r of results) {
-  byCategory[r.category] = byCategory[r.category] || { total: 0, pass: 0 }
-  byCategory[r.category].total++
-  if (r.pass) byCategory[r.category].pass++
-}
-console.log('\n================ 安全验证汇总 ================')
-const order = ['AUTH', 'SESSION', 'INJ', 'CSRF', 'HTTP', 'INFO', 'AUTHZ', 'ISO', 'AVAIL', 'DEPLOY', 'WS-ISO', 'CFG', 'REG', 'TOTP']
-for (const c of order) {
-  const s = byCategory[c] || { total: 0, pass: 0 }
-  const flag = s.pass === s.total ? 'PASS' : 'FAIL'
-  console.log(`${flag}  ${c.padEnd(8)} ${s.pass}/${s.total}`)
-}
+// ⚠️ 汇总必须放在**全部用例之后**：早期版本把这段放在文件中部，导致其后的用例
+// （I18N / WS-ISO / v0.7.0 各面）在表格里恒显示 0/0——报告与事实不一致。
 // ===== v0.7.0 新增面：按用户密钥存储 / 分享鉴权 / 新 RPC / 本地化安全不变式 =====
 {
   const rpcCall = (method, body, cookie) => new Promise((resolve) => {
@@ -882,7 +872,89 @@ for (const c of order) {
   }
 }
 
+// ===== WS-ISO：mux 逐帧归属过滤（Issue #6 的回归护栏）=====
+// 泄漏形态全部来自真实抓包：宿主把**全部**工作区/会话推给每个连接，
+// 且这些帧都没有顶层 `sessionId`，所以必须按 `baseline.items` / `workspace` / `workspaceIds` 逐个裁决。
+{
+  const owned = {
+    sessions: new Map([['s-admin', 'admin'], ['s-bob', 'bob']]),
+    workspaces: new Map([['w-admin', 'admin'], ['w-bob', 'bob']]),
+  }
+  const lookup = {
+    session: (id) => owned.sessions.get(id) ?? '',
+    workspace: (id) => owned.workspaces.get(id) ?? '',
+  }
+  const bob = { username: 'bob', role: 'user' }
+  const root = { username: 'admin', role: 'admin' }
+  const item = (value) => ({ type: 'item', streamId: 'st', value })
+  const baseline = (body) => item({ type: 'baseline', value: body })
+  const items = (frame) => frame?.value?.value?.items
+
+  const mixed = baseline({ items: [{ workspaceId: 'w-admin' }, { workspaceId: 'w-bob' }], projections: {} })
+  const bobBaseline = projectMuxFrame(bob, mixed, lookup)
+  check('WS-ISO', '普通用户 baseline 只保留自己的工作区（#6 主泄漏形态）',
+    bobBaseline !== undefined && JSON.stringify(items(bobBaseline)) === JSON.stringify([{ workspaceId: 'w-bob' }]),
+    JSON.stringify(bobBaseline?.value?.value?.items ?? null))
+  check('WS-ISO', '管理员 baseline 原样放行（不过度拦截，阳性对照）',
+    projectMuxFrame(root, mixed, lookup) === mixed)
+
+  const upsertOther = item({ type: 'upsert', workspace: { workspaceId: 'w-admin' } })
+  check('WS-ISO', '他人工作区的 upsert 整帧丢弃',
+    projectMuxFrame(bob, upsertOther, lookup) === undefined)
+  check('WS-ISO', '自己工作区的 upsert 正常放行',
+    projectMuxFrame(bob, item({ type: 'upsert', workspace: { workspaceId: 'w-bob' } }), lookup) !== undefined)
+
+  const order = item({ type: 'order', workspaceIds: ['w-admin', 'w-bob'] })
+  const bobOrder = projectMuxFrame(bob, order, lookup)
+  check('WS-ISO', 'order 帧按归属裁剪而不是丢弃（保留自己的工作区）',
+    JSON.stringify(bobOrder?.value?.workspaceIds) === JSON.stringify(['w-bob']),
+    JSON.stringify(bobOrder?.value?.workspaceIds ?? null))
+  check('WS-ISO', 'order 帧对管理员原样放行', projectMuxFrame(root, order, lookup) === order)
+
+  const sessionItems = baseline({ items: [{ sessionId: 's-admin' }, { sessionId: 's-bob' }], projections: {} })
+  const bobSessions = projectMuxFrame(bob, sessionItems, lookup)
+  check('WS-ISO', 'baseline 中他人会话条目被剔除',
+    JSON.stringify(items(bobSessions)) === JSON.stringify([{ sessionId: 's-bob' }]))
+
+  const unknownProj = baseline({ items: [], projections: { 'opaque-key': { whatever: 1 }, 's-admin': { sessionId: 's-admin' } } })
+  const bobProj = projectMuxFrame(bob, unknownProj, lookup)
+  const projKeys = Object.keys(bobProj?.value?.value?.projections ?? {})
+  check('WS-ISO', 'projections 只剔除携带他人 sessionId 的条目，未知键不猜不删',
+    projKeys.length === 1 && projKeys[0] === 'opaque-key', JSON.stringify(projKeys))
+
+  // 反向护栏：没有归属字段的帧必须原样通过，否则界面会因丢帧而失去功能。
+  const opaque = item({ type: 'append', delta: 'hello' })
+  check('WS-ISO', '无归属字段的帧原样放行（避免过度拦截）', projectMuxFrame(bob, opaque, lookup) === opaque)
+  const ready = { type: 'ready', clientId: 'c1' }
+  check('WS-ISO', 'ready 握手帧原样放行', projectMuxFrame(bob, ready, lookup) === ready)
+
+  // 契约护栏：默认必须启用代理（否则 #6 会静默回归），且必须能识别自己的上游连接。
+  const indexSrc = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+  check('WS-ISO', 'mux 升级默认走归属过滤代理（DSH_AUTH_MUX_PROXY=0 才退避）',
+    indexSrc.includes("DSH_AUTH_MUX_PROXY !== '0'") && indexSrc.includes('isOwnMuxProxyRequest'))
+  const gatewaySrc = readFileSync(new URL('../lib/modern-gateway.js', import.meta.url), 'utf8')
+  check('WS-ISO', '代理上游连接带 nonce 头（防自我递归）', gatewaySrc.includes('MUX_PROXY_HEADER'))
+  check('WS-ISO', '逐帧过滤器为可测试的导出纯函数', typeof projectMuxFrame === 'function')
+}
+
 const failed = results.filter((r) => !r.pass)
+// 汇总（此处计算才覆盖全部用例）
+{
+  const byCategory = {}
+  for (const r of results) {
+    byCategory[r.category] = byCategory[r.category] || { total: 0, pass: 0 }
+    byCategory[r.category].total++
+    if (r.pass) byCategory[r.category].pass++
+  }
+  const order = ['AUTH', 'SESSION', 'INJ', 'CSRF', 'HTTP', 'INFO', 'AUTHZ', 'ISO', 'AVAIL', 'DEPLOY', 'WS-ISO', 'CFG', 'REG', 'TOTP', 'I18N']
+  for (const c of Object.keys(byCategory)) if (!order.includes(c)) order.push(c)
+  console.log('\n================ 安全验证汇总 ================')
+  for (const c of order) {
+    const s = byCategory[c]
+    if (s === undefined) continue
+    console.log(`${s.pass === s.total ? 'PASS' : 'FAIL'}  ${c.padEnd(8)} ${s.pass}/${s.total}`)
+  }
+}
 console.log(`\n总计: ${results.length - failed.length}/${results.length} 通过`)
 if (failed.length > 0) {
   console.log('\n失败项:')
