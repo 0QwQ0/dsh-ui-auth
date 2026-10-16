@@ -124,6 +124,22 @@ async function probe() {
     const userIds = workspaceIds(spy.user)
     const leaked = [...userIds].filter((id) => adminIds.has(id))
     console.log(`  [${base}] 管理员可见工作区 ${adminIds.size} 个 | 普通用户可见 ${userIds.size} 个 | 交集 ${leaked.length} 个`)
+    // 报告者（Issue #6）看到的症状是"**普通用户侧边栏出现他人会话行**"：会话行由会话 id 驱动，
+    // 而 `workspace/follow` 的基线/增量帧里就带着 `sessionIds`。因此这里用**会话 id** 再判一次，
+    // 而不是只看工作区 id —— 否则可能放过"工作区不泄漏、但会话 id 仍泄漏"的情形。
+    const mentions = (frames, needle) => frames.filter((frame) => String(frame).includes(needle)).length
+    const adminSees = sessionId !== '' ? mentions(spy.admin, sessionId) : 0
+    const userSees = sessionId !== '' ? mentions(spy.user, sessionId) : 0
+    console.log(`  新建会话 id 出现次数：管理员 ${adminSees} 次 | 普通用户 ${userSees} 次`)
+    if (sessionId !== '' && adminSees === 0) {
+      // 本环境实测：remote 建出的会话不会被宿主挂到工作区帧上（`session not found`），
+      // 因此这条判定**不适用**——记为跳过而不是失败（否则探针在健康实例上也会红）。
+      console.log('  提示：该实例未在 mux 帧里推送该会话 id，跳过"会话行泄漏"判定（工作区与 open 两半仍然判定）')
+    }
+    if (userSees > 0) {
+      console.error(`  LEAK：普通用户在 mux 帧里看到了管理员的会话 id（报告者症状：侧边栏出现他人会话行）`)
+      return 1
+    }
     if (verbose) {
       for (const label of ['admin', 'user']) console.log(`  [${label}] 采集结束，共 ${spy[label].length} 帧（含创建后）`)
     }
