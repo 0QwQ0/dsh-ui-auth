@@ -523,6 +523,10 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
               // Recheck ownership as well as login state throughout a scoped stream.
               if (!(rule ? await rule.authorize(watcher, payload) : await policy.authorize(watcher, endpoint, payload, true))) throw denial()
               const output = rule ? await rule.project(watcher, value) : policy.frame(watcher, endpoint, value, work.correlation)
+              // 诊断开关：默认不输出；排查"事件不流动/被过滤"时开启（宿主是否送来、是否被丢弃一目了然）。
+              if (process.env.DSH_AUTH_DEBUG_STREAM === '1' && object(value) && (value as JsonObject).type === 'emit') {
+                console.error(`[dsh-ui-auth][stream] emit=${String((value as JsonObject).event)} -> ${output === null ? 'dropped' : 'delivered'}`)
+              }
               const frame = object(value) ? value : undefined
               if (endpoint === '$events' && frame?.type === 'waterfall' && output === null) {
                 // A hidden recipient must release its delivery, otherwise an owner's "next"
