@@ -44,7 +44,17 @@ interface NativeConnection {
 /** Typert gateway seam (`ctx.get('typertGateway')`). */
 interface TypertGateway {
   wireStream?: {
-    open(endpoint: string, payload: unknown, signal: AbortSignal): Promise<AsyncIterable<unknown>>
+    /**
+     * 宿主的真实签名是 `(endpoint, payload, uplink, peer, signal)`——少传参数会让 signal 落进 uplink，
+     * 宿主在 `AbortSignal.any([signal, …])` 处报 "Received undefined"（实测）。
+     */
+    open(
+      endpoint: string,
+      payload: unknown,
+      uplink: unknown,
+      peer: unknown,
+      signal: AbortSignal,
+    ): Promise<AsyncIterable<unknown>>
   }
 }
 
@@ -499,8 +509,13 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
             const current = alive()
             const rule = extension('stream', endpoint)
             if (current === undefined || !(rule ? await rule.authorize(current, payload) : await policy.authorize(current, endpoint, payload, true))) throw denial()
-            const source = await wireStream.open(endpoint, payload, work.abort.signal)
+            const source = await wireStream.open(endpoint, payload, undefined, who, work.abort.signal)
             for await (const value of source) {
+              // 宿主 $events 的首帧是 ready，其 clientId 就是浏览器后续在 $events/result 里回传的标识；
+              // 必须把它记入相关性，绑定才会成立（Issue #2 的行级根因就在这里）。
+              if (object(value) && (value as JsonObject).type === 'ready' && typeof (value as JsonObject).clientId === 'string') {
+                work.correlation.clientId = (value as JsonObject).clientId as string
+              }
               if (work.abort.signal.aborted) break
               const watcher = alive()
               if (watcher === undefined) throw denial()
@@ -526,7 +541,9 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
               if (output !== null) await send({ type: 'item', streamId, value: output })
             }
             if (!work.abort.signal.aborted) await send({ type: 'end', streamId })
-          } catch {
+          } catch (error) {
+            // 流失败的**真实原因**必须留下痕迹：否则前端只看到 auth/forbidden，无法定位（本仓库吃过这个亏）。
+            console.error(`[dsh-ui-auth] 流处理失败（endpoint=${String(endpoint)}）：${error instanceof Error ? error.message : String(error)}`)
             if (!work.abort.signal.aborted) {
               await send({ type: 'error', streamId, error: { code: 'auth/forbidden', message: 'Stream unavailable or access denied', details: {} } })
                 .catch(() => ws.close(1008))
