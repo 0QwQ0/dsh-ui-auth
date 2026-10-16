@@ -84,14 +84,19 @@
 
 **有意为之的取舍**：
 1. **免解锁查余额不做**：那要求服务端能解密私有 Key（放弃 E2E）。所有者明确选择保持现状（[ROADMAP](ROADMAP.md)）。
-2. **mux 逐帧按用户过滤（Issue #6）—— 已在 v0.7.1 修复**：0.2.0 客户端把 `/api/remote.mux`（WebSocket）当作主连接通道，
-   普通用户也需要它，而**宿主把这条通道当"单用户"用**：它会把**全部**工作区与会话推给每个连接。
-   真实浏览器双身份抓包（`npm run test:mux:leak`）确认了三种泄漏形态，且**都不含顶层 `sessionId`**：
-   `baseline.value.items[].workspaceId`（初始全量，最易漏）、`upsert.workspace.workspaceId`、`order.workspaceIds[]`。
-   现状：`gateUp` 在本插件内**透明代理**该升级，`projectMuxFrame()` 逐帧按归属裁决（他人数据丢弃或裁剪、
-   管理员不受限、无归属字段的帧原样放行）；代理不解析 mux 语义，因此仍与 0.2.0 客户端兼容，上游连接带 nonce 头防自我递归。
-   实测对比（同一实例，只改开关）：直通时普通用户可见 **15** 个管理员工作区，代理下为 **0**（管理员 16 个不受限）。
-   残留：排障用退避开关 `DSH_AUTH_MUX_PROXY=0` 会重现该泄漏。
+2. **mux 跨用户泄漏（Issue #6）—— 已在 v0.7.1 修复（两个方向）**：0.2.0 客户端把 `/api/remote.mux`（WebSocket）当作主连接通道，
+   普通用户也需要它，而**宿主把这条通道当"单用户"用**。真实浏览器双身份抓包（`npm run test:mux:leak`）确认了两件独立的事：
+   - **下行广播**：宿主把**全部**工作区与会话推给每个连接，形态为 `baseline.value.items[].workspaceId`（初始全量，**没有顶层 `sessionId`**，最易漏）、
+     `upsert.workspace.workspaceId`、`order.workspaceIds[]`；
+   - **上行订阅**：宿主对任何 `sessionId` 的 `open` 都照单服务，因此只过滤下行**不够**——普通用户可以直接订阅他人会话的流。
+   现状：`gateUp` 把升级交给网关唯一入口 `handleUpgrade`，`/api/remote.mux` 由 `proxyMuxUpgrade` 透明代理；
+   **上行**每个 `open` 先按归属授权（未授权不转发），**下行**逐帧调用策略层 `policy.frame()`（丢弃/裁剪/投影，未知流 fail-closed 丢弃），
+   被隐藏的 waterfall 接收方由代理代其释放投递。代理不解析 mux 语义，因此仍与 0.2.0 客户端兼容。
+   实测 A/B（**同一构建**，只改 `DSH_AUTH_MUX_PROXY`）：直通时普通用户可见 **20** 个管理员工作区、且对他人会话的 `open` 到达宿主；
+   代理下为 **0**，`open` 被我方以 `auth/forbidden` 拒绝（管理员 20 个不受限、`open` 正常到达宿主）。
+   **验证边界（诚实标注）**：本环境里宿主运行时对 remote 建出的会话回 `gateway/internal: session not found`，
+   所以"他人会话内容"这一层**无法被实证**；上表证明的是"未授权的 open 不再被转发"，不是"内容曾经泄漏过又被堵上"。
+   残留：排障用退避开关 `DSH_AUTH_MUX_PROXY=0` 会重现上述两条。
 3. **`$events/result`（审批/提问应答）不做内容级授权**：策略层直接 `return false`，改由网关**关联**放行——
    只有本连接**确实收到过**该事件帧（`correlation.events`）才允许提交应答，因此不能用 payload 自证属主、也无法应答他人会话。
    语义级校验（应答是否合理）仍不在本插件职责内。
@@ -107,13 +112,15 @@
 | 宿主管包解析路径 | 从插件自身路径解析不到宿主包 | 以**宿主进程入口**为锚点 `createRequire` |
 | 余额 fetcher 未注入 | 查余额永远 `unavailable` | 注入 + 批量接口 `balanceQueryAll` |
 | 升级被自研 mux 接管 | 设置页无限"重新连接中"（含管理员） | 升级改由本插件**透明代理**（见 §6.2） |
-| mux 把**全部**工作区/会话推给每个连接 | 普通用户实时看到管理员的工作区与会话（Issue #6） | 代理 + `projectMuxFrame()` 逐帧归属过滤 + `WS-ISO` 回归 + `test:mux:leak` |
+| mux 把**全部**工作区/会话推给每个连接 | 普通用户实时看到管理员的工作区与会话（Issue #6 的下行半边） | 代理 + 逐帧 `policy.frame()` + `WS-ISO` 回归 + `test:mux:leak` |
+| 宿主按任何 `sessionId` 服务 mux 流 | 普通用户可直接订阅他人会话的流（#6 的上行半边，实测直通时 open 到达宿主） | 每个 `open` 先 `policy.authorize(..., true)`，未授权不转发；`WS-ISO` + `test:mux:leak` |
+| 自研 mux（`wireStream` 自建流）与 0.2.0 协议不兼容 | 设置页无限「重新连接中」；且该实现成为死代码与崩溃面 | 升级入口收敛为 `handleUpgrade`，自研 mux 代码已删除 |
 | 会话 Cookie 名固定 | 同机多实例**互相踢下线** | 名字按 `DSH_HOME` 唯一化 |
 
 ## 8. 审计清单（可直接执行）
 
 ```bash
-# 1) 全量回归（含安全套件 158 项、主机/客户端冒烟、客户端契约自检、i18n）
+# 1) 全量回归（含安全套件 162 项、主机/客户端冒烟、客户端契约自检、i18n）
 npm ci && npm test
 
 # 2) 真实 DSH 0.2.0 实例上的端到端验收（38 项：登录门/载体桥接/Remote 授权/用户隔离/R2 阻断）
@@ -133,7 +140,7 @@ PROBE_URL=http://127.0.0.1:3205 npm run test:mux:leak
 要点自查（人工）：未登录 → `/` 是否 302 到登录页；`/api/*` 是否 401；
 普通用户是否**看不到**他人会话；普通用户是否**不能**调用 `settings/*`、`credentials/*`、`account/*`；
 两个不同 `DSH_HOME` 的实例是否能**同时登录**互不影响；分享撤销后是否**立即**失效；
-`npm run test:mux:leak` 是否在普通用户侧报 **0** 个可见工作区（且管理员侧非 0，否则是 VOID 而非通过）。
+`npm run test:mux:leak` 是否在普通用户侧报 **0** 个可见工作区、且对**他人会话的 `open` 未到达宿主**（管理员侧两项都必须为正，否则是 VOID 而非通过）。
 
 ## 9. 漏洞报告
 

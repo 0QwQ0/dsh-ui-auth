@@ -7,7 +7,7 @@
 import { EventEmitter } from 'node:events'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { apply, readLockConfig, clientIp, totpCodeAt } from '../lib/index.js'
-import { projectMuxFrame } from '../lib/modern-gateway.js'
+import { createModernPolicy } from '../lib/modern-policy.js'
 
 // 会话 Cookie 名由插件按 DSH_HOME 派生（同一实例内稳定、实例间不同）；测试用同一公式。
 const COOKIE_NAME = 'dsh_auth_' + (() => {
@@ -873,68 +873,69 @@ check('DEPLOY', '登录失败锁定按源 IP（反向代理下聚合，README �
 }
 
 // ===== WS-ISO：mux 逐帧归属过滤（Issue #6 的回归护栏）=====
-// 泄漏形态全部来自真实抓包：宿主把**全部**工作区/会话推给每个连接，
-// 且这些帧都没有顶层 `sessionId`，所以必须按 `baseline.items` / `workspace` / `workspaceIds` 逐个裁决。
+// 代理本身不实现过滤，而是**逐帧复用策略层 `policy.frame()`**（唯一事实来源，另有
+// `modern-policy.test.mjs` 的单元覆盖）。这里锁两件事：
+//   ① 实测泄漏形态在策略层确实被拦截（用**真实抓包**的帧形状，不是构造出来的形状）；
+//   ② 代理确实把策略接上了（端点跟踪、fail-closed、nonce 递归防护、退避开关、死代码已清除）。
 {
-  const owned = {
-    sessions: new Map([['s-admin', 'admin'], ['s-bob', 'bob']]),
-    workspaces: new Map([['w-admin', 'admin'], ['w-bob', 'bob']]),
-  }
-  const lookup = {
-    session: (id) => owned.sessions.get(id) ?? '',
-    workspace: (id) => owned.workspaces.get(id) ?? '',
-  }
-  const bob = { username: 'bob', role: 'user' }
-  const root = { username: 'admin', role: 'admin' }
-  const item = (value) => ({ type: 'item', streamId: 'st', value })
-  const baseline = (body) => item({ type: 'baseline', value: body })
-  const items = (frame) => frame?.value?.value?.items
+  const alice = { username: 'alice', role: 'user' }
+  const root = { username: 'root', role: 'admin' }
+  const policy = createModernPolicy({
+    session: (id) => (id === 's-alice' ? 'alice' : 'bob'),
+    workspace: (id) => (id === 'w-alice' ? 'alice' : 'bob'),
+    sessionExists: async () => true,
+    claimSession: async () => {},
+  })
+  // 帧形状取自真实浏览器抓包（宿主 → 客户端方向，全部不带顶层 sessionId）
+  const baseline = { type: 'baseline', value: {
+    items: [{ workspaceId: 'w-alice' }, { workspaceId: 'w-bob' }], archivedSessionIds: [],
+  } }
+  const projected = policy.frame(alice, 'workspace/follow', baseline)
+  const projectedItems = projected?.value?.items
+  check('WS-ISO', '普通用户 workspace/follow 全量基线只留自己的工作区（#6 主形态）',
+    Array.isArray(projectedItems) && projectedItems.length === 1 && projectedItems[0].workspaceId === 'w-alice',
+    JSON.stringify(projectedItems ?? null))
+  check('WS-ISO', '管理员全量基线原样放行（不过度拦截，阳性对照）',
+    policy.frame(root, 'workspace/follow', baseline) === baseline)
+  check('WS-ISO', '他人工作区 upsert 整帧丢弃',
+    policy.frame(alice, 'workspace/follow', { type: 'upsert', workspace: { workspaceId: 'w-bob' } }) === null)
+  check('WS-ISO', 'order 列表按归属裁剪（保留自己的工作区）',
+    JSON.stringify(policy.frame(alice, 'workspace/follow', { type: 'order', workspaceIds: ['w-bob', 'w-alice'] })?.workspaceIds) === JSON.stringify(['w-alice']))
+  check('WS-ISO', 'session/control 基线按属主过滤',
+    Object.keys(policy.frame(alice, 'session/control', { type: 'baseline', value: { queues: { 's-alice': 1, 's-bob': 2 }, jobs: {}, projections: {} } })?.value?.queues ?? {}).length === 1)
+  // 事件通道：实测「建会话后 emit 帧数为 0」，但策略层对同类帧本来就按属主要求，故锁住其语义。
+  const correlation = { events: new Set() }
+  check('WS-ISO', 'api-session/added 摘要对象按会话属主裁决',
+    policy.frame(alice, '$events', { type: 'emit', event: 'api-session/added', args: [{ sessionId: 's-bob' }] }, correlation) === null
+    && policy.frame(alice, '$events', { type: 'emit', event: 'api-session/added', args: [{ sessionId: 's-alice' }] }, correlation) !== null)
+  check('WS-ISO', '未登记的事件类型不投递给普通用户',
+    policy.frame(alice, '$events', { type: 'emit', event: 'cordis/dynamic-resolved', args: [] }, correlation) === null)
+  check('WS-ISO', '无归属信息的普通帧不被误删（避免过度拦截）',
+    JSON.stringify(policy.frame(alice, 'session/follow', { type: 'append', delta: 'x' })) === JSON.stringify({ type: 'append', delta: 'x' }))
 
-  const mixed = baseline({ items: [{ workspaceId: 'w-admin' }, { workspaceId: 'w-bob' }], projections: {} })
-  const bobBaseline = projectMuxFrame(bob, mixed, lookup)
-  check('WS-ISO', '普通用户 baseline 只保留自己的工作区（#6 主泄漏形态）',
-    bobBaseline !== undefined && JSON.stringify(items(bobBaseline)) === JSON.stringify([{ workspaceId: 'w-bob' }]),
-    JSON.stringify(bobBaseline?.value?.value?.items ?? null))
-  check('WS-ISO', '管理员 baseline 原样放行（不过度拦截，阳性对照）',
-    projectMuxFrame(root, mixed, lookup) === mixed)
+  // 打开流（客户端 → 宿主方向）同样要按归属授权：代理现在会对每个 open 调用这一判定。
+  // 实测（退避实例）：不发这一判定，普通用户对**他人会话**的 open 会被直接放行到宿主。
+  const ask = (sessionId) => ({ args: { request: { address: { kind: 'session', sessionId } } } })
+  check('WS-ISO', '打开自己的会话流被允许（阳性对照）',
+    await policy.authorize(alice, 'session/follow', ask('s-alice'), true) === true)
+  check('WS-ISO', '打开他人会话流被拒绝（代理据此拒发 open）',
+    await policy.authorize(alice, 'session/follow', ask('s-bob'), true) === false)
 
-  const upsertOther = item({ type: 'upsert', workspace: { workspaceId: 'w-admin' } })
-  check('WS-ISO', '他人工作区的 upsert 整帧丢弃',
-    projectMuxFrame(bob, upsertOther, lookup) === undefined)
-  check('WS-ISO', '自己工作区的 upsert 正常放行',
-    projectMuxFrame(bob, item({ type: 'upsert', workspace: { workspaceId: 'w-bob' } }), lookup) !== undefined)
-
-  const order = item({ type: 'order', workspaceIds: ['w-admin', 'w-bob'] })
-  const bobOrder = projectMuxFrame(bob, order, lookup)
-  check('WS-ISO', 'order 帧按归属裁剪而不是丢弃（保留自己的工作区）',
-    JSON.stringify(bobOrder?.value?.workspaceIds) === JSON.stringify(['w-bob']),
-    JSON.stringify(bobOrder?.value?.workspaceIds ?? null))
-  check('WS-ISO', 'order 帧对管理员原样放行', projectMuxFrame(root, order, lookup) === order)
-
-  const sessionItems = baseline({ items: [{ sessionId: 's-admin' }, { sessionId: 's-bob' }], projections: {} })
-  const bobSessions = projectMuxFrame(bob, sessionItems, lookup)
-  check('WS-ISO', 'baseline 中他人会话条目被剔除',
-    JSON.stringify(items(bobSessions)) === JSON.stringify([{ sessionId: 's-bob' }]))
-
-  const unknownProj = baseline({ items: [], projections: { 'opaque-key': { whatever: 1 }, 's-admin': { sessionId: 's-admin' } } })
-  const bobProj = projectMuxFrame(bob, unknownProj, lookup)
-  const projKeys = Object.keys(bobProj?.value?.value?.projections ?? {})
-  check('WS-ISO', 'projections 只剔除携带他人 sessionId 的条目，未知键不猜不删',
-    projKeys.length === 1 && projKeys[0] === 'opaque-key', JSON.stringify(projKeys))
-
-  // 反向护栏：没有归属字段的帧必须原样通过，否则界面会因丢帧而失去功能。
-  const opaque = item({ type: 'append', delta: 'hello' })
-  check('WS-ISO', '无归属字段的帧原样放行（避免过度拦截）', projectMuxFrame(bob, opaque, lookup) === opaque)
-  const ready = { type: 'ready', clientId: 'c1' }
-  check('WS-ISO', 'ready 握手帧原样放行', projectMuxFrame(bob, ready, lookup) === ready)
-
-  // 契约护栏：默认必须启用代理（否则 #6 会静默回归），且必须能识别自己的上游连接。
-  const indexSrc = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
-  check('WS-ISO', 'mux 升级默认走归属过滤代理（DSH_AUTH_MUX_PROXY=0 才退避）',
-    indexSrc.includes("DSH_AUTH_MUX_PROXY !== '0'") && indexSrc.includes('isOwnMuxProxyRequest'))
-  const gatewaySrc = readFileSync(new URL('../lib/modern-gateway.js', import.meta.url), 'utf8')
-  check('WS-ISO', '代理上游连接带 nonce 头（防自我递归）', gatewaySrc.includes('MUX_PROXY_HEADER'))
-  check('WS-ISO', '逐帧过滤器为可测试的导出纯函数', typeof projectMuxFrame === 'function')
+  // 代理接线（源码级契约）：这些一撤掉 #6 就会静默回归。
+  const gateway = readFileSync(new URL('../lib/modern-gateway.js', import.meta.url), 'utf8')
+  const index = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+  check('WS-ISO', '代理逐帧调用策略层 frame()（不再有第二份过滤实现）',
+    gateway.includes('policy.frame(') && !gateway.includes('projectMuxFrame'))
+  check('WS-ISO', '代理按客户端 open 帧跟踪 streamId → endpoint',
+    gateway.includes('endpoints.set(') && gateway.includes('endpoints.delete('))
+  check('WS-ISO', '未知流的帧 fail-closed 丢弃', gateway.includes('丢弃未知流'))
+  check('WS-ISO', '代理上游连接带 nonce 头（防自我递归）', gateway.includes('MUX_PROXY_HEADER'))
+  check('WS-ISO', '被隐藏的 waterfall 接收方仍会释放投递（否则属主的 next 挂住）',
+    gateway.includes('releaseWaterfall') && gateway.includes('$events/result'))
+  check('WS-ISO', '升级入口唯一：闸门把升级交给 handleUpgrade（含 mux 代理与策略）',
+    index.includes('modern.handleUpgrade(') && index.includes('DSH_AUTH_MUX_PROXY'))
+  check('WS-ISO', '自研 mux 死代码已移除（不再经 typertGateway.wireStream 自建流）',
+    !gateway.includes('wireStream') && !gateway.includes('MAX_STREAMS'))
 }
 
 const failed = results.filter((r) => !r.pass)

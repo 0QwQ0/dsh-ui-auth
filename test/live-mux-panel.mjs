@@ -39,6 +39,7 @@ const text = await page.evaluate(() => (document.body.innerText.match(/重新连
 console.log('  面板文案:', text)
 console.log('  连接类日志:', connLogs.length, connLogs.slice(0, 2).join(' | '))
 console.log('  /api 调用数:', api.size, [...api].slice(0, 6).join(', '))
+if (process.env.DSH_PANEL_VERBOSE === '1') console.log('  全部 /api 调用:', [...api].sort().join(', '))
 await browser.close()
 await rpc(admin, 'deleteUser', { username: uname })
 process.exit(text === '(无)' && connLogs.length === 0 ? 0 : 1)

@@ -269,12 +269,21 @@ dsh plugin --profile web remove dsh-ui-auth
 
 ### 已知边界（v0.7.1）
 
-- **mux 跨用户泄漏（Issue #6，已修复）**：网关现在代理 `/api/remote.mux` 升级并**逐帧按登录归属过滤**——
-  他人的 `baseline.items` / `upsert.workspace` 丢弃、`order.workspaceIds` 裁剪，无归属字段的帧（如 `ready` 握手）原样放行，
-  管理员不受限。三种泄漏形态都是**真实浏览器抓包**发现的（`baseline` 最易漏，它没有顶层 `sessionId`）。
-  回归护栏：`npm run test:mux:leak`（双身份真实浏览器 A/B，NO-LEAK 退出 0、LEAK 退出 1）+
-  `test/security-suite.mjs` 的 `WS-ISO` 分类（过滤纯函数的行为用例）。
-  实测（同一实例、只改开关）：直通时普通用户可见 **15** 个管理员工作区；代理下为 **0**（管理员 16 个不受限）。
+- **mux 跨用户泄漏（Issue #6，已修复）**：网关现在代理 `/api/remote.mux` 升级，并在**两个方向**都按登录归属把关：
+  - **下行（宿主 → 客户端）**：逐帧复用策略层 `policy.frame()`——他人的 `baseline.items`/`upsert.workspace` 丢弃、
+    `order.workspaceIds` 与 `archivedSessionIds` 裁剪、`session/control` 基线按属主投影、`api-session/*` 等事件按会话归属、
+    无归属字段的帧（如 `ready` 握手）放行、管理员不受限。三种形态都是**真实浏览器抓包**发现的（`baseline` 最易漏，
+    它没有顶层 `sessionId`）；被隐藏的 waterfall 接收方仍会代其释放投递，属主的交互不会挂住。
+  - **上行（客户端 → 宿主）**：每个 `open` 先按归属授权，未授权就**不转发**（对端只看到 `auth/forbidden`）。
+    宿主的 mux 是"单用户"语义，会照单服务任何 `sessionId`，所以只过滤下行是不够的。
+  回归护栏：`npm run test:mux:leak`（双身份真实浏览器 A/B：普通用户可见工作区必须为 0、且**对他人会话的 open 不得到达宿主**，
+  管理员侧为阳性对照；NO-LEAK 退出 0）+ 安全套件的 `WS-ISO` 分类（17 项，驱动策略层与代理接线）。
+  实测（同一构建、只改 `DSH_AUTH_MUX_PROXY`）：直通时普通用户可见 **20** 个管理员工作区、且他人会话 open 被放行到宿主；
+  代理下为 **0**，且 open 被我方拒绝（管理员 20 个不受限、open 正常到达宿主）。
+  排障退避：`DSH_AUTH_MUX_PROXY=0`（**退避后上述泄漏会重现**，仅用于定位问题）。
+- **旧自研 mux 已彻底移除**：`typertGateway.wireStream` 自建流那套（含 `MAX_STREAMS`、`StreamWork`）是 0.7.0 的死代码，
+  已删除；升级入口收敛为网关的 `handleUpgrade`（mux → 代理；其他升级路径 → `upgrade` 策略，默认仅管理员，
+  可用 `uiAuth.registerPolicy()` 逐条放开，并监视登录态失效后主动断开）。
 - **会话 Cookie 按实例唯一**：以 `DSH_HOME` 短哈希为后缀（实例内稳定、实例间互不干扰）。
   注意：该修复在 v0.7.0 生效；同机上仍在跑 0.6.x 的实例其 Cookie 名仍旧式，跨版本仍可能互相踢。
 - **查余额需要解锁**：私有 Key 为口令派生密钥加密（E2E），服务端在未解锁时无法解密，故按设计提示「需先解锁」。

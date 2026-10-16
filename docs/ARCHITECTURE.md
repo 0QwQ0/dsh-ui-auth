@@ -44,11 +44,18 @@
                            └─ 放行 → 转发宿主；policy.result() 按用户投影返回值
 ```
 
-**升级（WebSocket）**：`gateUp` 校验会话后，`/api/remote.mux` 的升级由 `proxyMuxUpgrade` **在本插件内透明代理**：
-以 `ws` 客户端连回宿主自己的 mux（上游连接带 nonce 头，防自我递归），帧原样转发，但在**宿主 → 客户端**方向用
-`projectMuxFrame(who, frame, auth)` 按登录归属裁决（丢弃/裁剪他人的工作区与会话帧，管理员不受限，无归属字段的帧放行）。
-不自己实现 mux 语义是刻意的：宿主的事件广播挂在它自己的 mux 连接上，自研 mux 收不到 emit 帧（UI 会一直「重新连接中」）。
-`DSH_AUTH_MUX_PROXY=0` 可退避为直通（跨用户泄漏会重现）。
+**升级（WebSocket）**：`gateUp` 把升级交给网关的 `handleUpgrade`（**唯一入口**）：
+- `/api/remote.mux` → `proxyMuxUpgrade` 在本插件内**透明代理**（以 `ws` 客户端连回宿主自己的 mux，上游连接带 nonce 头防自我递归）。
+  - **上行**：记录 `open` 帧的 `streamId → endpoint`，并对每个 `open` 先调 `policy.authorize(who, endpoint, payload, true)`；
+    未授权就**不转发**（只向客户端回 `auth/forbidden`）。宿主的 mux 是单用户语义，会照单服务任何 `sessionId`，这一步是必需的。
+    上游尚未连上时上行帧**排队而非丢弃**（浏览器握手完成即发 `open`，上游多半还在 CONNECTING）。
+  - **下行**：逐帧调用 `policy.frame(who, endpoint, value, correlation)`（**唯一事实来源**，另有 `modern-policy.test.mjs` 覆盖）——
+    `null` 即丢弃，返回新对象即改写后转发；未知 `streamId` 的帧 fail-closed 丢弃；被隐藏的 waterfall 接收方由代理代其释放投递。
+- 其他升级路径 → 按 `upgrade` 策略裁决（默认仅管理员，`registerPolicy` 可放开），并在连接存续期内监视登录态失效后主动断开。
+
+不自己实现 mux 语义是刻意的：宿主的事件广播挂在它自己的 mux 连接上，自研 mux 收不到 emit 帧（UI 会一直「重新连接中」），
+那套实现（`typertGateway.wireStream` / `MAX_STREAMS` / `StreamWork`）已在 v0.7.1 作为死代码删除。
+`DSH_AUTH_MUX_PROXY=0` 可退避为直通（跨用户泄漏会重现，仅排障）。
 
 ## 4. 数据模型与存储键
 

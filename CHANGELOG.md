@@ -7,29 +7,43 @@
 **安全修复（重要：0.7.0 请尽快升级）**
 
 1. **mux 跨用户泄漏（Issue #6）**：0.2.0 客户端把 `/api/remote.mux`（WebSocket）当作主连接通道，
-   普通用户也需要它，而**宿主把这条通道当"单用户"用**——它会把**全部**工作区与会话推给每个连接，
-   于是普通用户在界面上能看到管理员的会话/工作区。0.7.0 的"校验会话后把升级转交宿主"正是根因。
-   现在网关在**本插件内透明代理**该升级，并在**宿主 → 客户端**方向逐帧按登录归属裁决：
-   他人的 `baseline.value.items`（初始全量、最易漏）、`upsert.workspace`、`order.workspaceIds` 与
-   `sessionId` 帧被丢弃或裁剪；无归属字段的帧（如 `ready` 握手）原样放行；管理员不受限。
-   代理**不解析 mux 语义**，因此仍与 0.2.0 客户端协议兼容（不会重现 0.7.0 之前那个"一直重新连接中"）。
-   退避开关 `DSH_AUTH_MUX_PROXY=0` 仅用于排障——**退避后泄漏会重现**。
-   - 回归：`test/security-suite.mjs` 新增 `WS-ISO` 分类（13 项，直接驱动可测试的过滤纯函数
-     `projectMuxFrame`）+ 新的活体测试 `npm run test:mux:leak`（双身份真实浏览器 A/B，NO-LEAK 退出 0）。
-   - 实测（同一实例，只改开关）：直通时普通用户可见管理员 **15** 个工作区；代理下为 **0**（管理员 16 个不受限）。
-2. **`$events/result`（审批/提问应答）** 不再只做形状校验：策略层直接拒绝，改由网关按
+   普通用户也需要它，而**宿主把这条通道当"单用户"用**。这不是一个问题而是**两个方向**的问题（都由真实浏览器抓包证实）：
+   - **下行广播**：宿主把**全部**工作区与会话推给每个连接（`baseline.value.items` 初始全量、`upsert.workspace`、
+     `order.workspaceIds`——`baseline` 没有顶层 `sessionId`，最易漏）；
+   - **上行订阅**：宿主对任何 `sessionId` 的 `open` 都照单服务，**因此只过滤下行是不够的**——普通用户可以直接订阅他人会话的流。
+   现在的实现（升级入口收敛为网关的 `handleUpgrade`，`/api/remote.mux` 走 `proxyMuxUpgrade` 透明代理）：
+   **上行**每个 `open` 先调 `policy.authorize(who, endpoint, payload, true)`，未授权**不转发**（对端只看到 `auth/forbidden`）；
+   上游尚未连上时上行帧**排队而非丢弃**（修掉"浏览器握手完成即发 open、上游还在 CONNECTING 就被丢掉"的静默丢帧）。
+   **下行**逐帧调用**策略层** `policy.frame()`（唯一事实来源，另有单测覆盖）：丢弃/裁剪/投影按属主进行，未知 `streamId` 的帧
+   fail-closed 丢弃，无归属字段的帧（如 `ready` 握手）放行，管理员不受限；被隐藏的 waterfall 接收方由代理**代其释放投递**
+   （否则属主的 `next` 会永远挂住）。代理**不解析 mux 语义**，因此仍与 0.2.0 客户端协议兼容（不会重现那个"一直重新连接中"）。
+   退避开关 `DSH_AUTH_MUX_PROXY=0` 仅用于排障——**退避后两个方向的问题都会重现**。
+   - 回归：`test/security-suite.mjs` 的 `WS-ISO` 分类（17 项：策略层实测形态 + 代理接线契约）
+     + 活体测试 `npm run test:mux:leak`（双身份真实浏览器 A/B，同时检查下行可见性与上行 open 是否到达宿主）。
+   - 实测 A/B（**同一构建**，只改开关）：直通时普通用户可见 **20** 个管理员工作区、且对他人会话的 `open` 到达宿主；
+     代理下分别为 **0** 与"我方 `auth/forbidden`"（管理员侧 20 个与 open 正常到达宿主 = 阳性对照）。
+   - **验证边界（如实记录）**：本环境里宿主运行时对 remote 建出的会话回 `gateway/internal: session not found`，
+     因此"他人会话内容"这一层无法被实证；被证实的是"未授权的 open 不再被转发"。
+2. **删除自研 mux 死代码**：`typertGateway.wireStream` 自建流那一整套（含 `MAX_STREAMS`、`StreamWork`、`sockets` WSS）
+   在 v0.7.0 改为"转交宿主"后已不可达，却仍是崩溃面与误读源，现全部删除；升级入口只剩 `handleUpgrade` 一处
+   （mux → 代理；其他路径 → `upgrade` 策略，默认仅管理员、`uiAuth.registerPolicy()` 逐条放开，并监视登录态失效后断开）。
+   顺带修正：`fieldOf()` 现在也看 `value` 一层——宿主实际把 `eventId` 放在 `value.eventId`，
+   此前的 `$events/result` 严格属主绑定**从未匹配到**过。
+3. **`$events/result`（审批/提问应答）** 不再只做形状校验：策略层直接拒绝，改由网关按
    "本连接确实收到过该事件帧"关联放行，无法用 payload 自证属主、也无法应答他人会话（Issue #2 的正解）。
 
 **其他修复**
 
-3. **安全验证报告的分类汇总不反映事实**：`test/security-suite.mjs` 的分类表格在文件中部计算，
+4. **安全验证报告的分类汇总不反映事实**：`test/security-suite.mjs` 的分类表格在文件中部计算，
    其后的用例（`I18N` / `WS-ISO` / v0.7.0 各面）在表格里恒显示 `0/0`。现已移到全部用例之后，
-   并让未登记的分类也进入表格（本次修正后：**158/158 通过、17 个分类**）。
+   并让未登记的分类也进入表格（本次修正后：**162/162 通过、17 个分类**）。
+5. 面板回归新增 `DSH_PANEL_VERBOSE=1`（打印全部 `/api` 调用）。修复后普通用户面板少一次 `/api/session/create`——
+   原因是**泄漏被堵住后普通用户看不到任何工作区，界面没有可建会话之处**，属修复的正常副作用。
 
 **文档**
 
-4. README「已知边界（v0.7.0）」中"互不信任的多用户部署请勿暴露面板"的限制**已移除**，
-   改为 v0.7.1 的修复说明与自查命令；同步更新 `docs/SECURITY.md` §6/§7、`docs/ARCHITECTURE.md`、
+6. README「已知边界（v0.7.0）」中"互不信任的多用户部署请勿暴露面板"的限制**已移除**，
+   改为 v0.7.1 的修复说明与自查命令；同步更新 `docs/SECURITY.md` §6/§7/§8、`docs/ARCHITECTURE.md`、
    `docs/DSH-0.2.0-COMPATIBILITY.md`（含一处过期的"普通用户 → 403"证据行）、`docs/OPERATIONS.md` 上线清单、
    `docs/RBAC-MODEL-PROFILES.md` 与 `docs/SECURITY-VERIFICATION.md`。
 

@@ -21,7 +21,6 @@ import type { JsonObject, ModernPolicy, Principal, StreamCorrelation } from './m
  *   interaction cannot be stranded.
  */
 const MAX_BODY = 16 * 1024 * 1024
-const MAX_STREAMS = 64
 const MUX_PATH = '/api/remote.mux'
 /** Exact `/api` Fetch routes that bypass Remote dispatch (0.1.5 inventory). */
 const HOST_CAPABILITY_PATHS = new Set(['/api/file', '/api/present.host', '/api/present.open'])
@@ -39,23 +38,6 @@ interface NativeConnection {
   ): boolean
   requestRejection(request: IncomingMessage): number | undefined
   createSharedFetchHandler(prefix: string): { fetch(request: Request): Promise<Response> }
-}
-
-/** Typert gateway seam (`ctx.get('typertGateway')`). */
-interface TypertGateway {
-  wireStream?: {
-    /**
-     * 宿主的真实签名是 `(endpoint, payload, uplink, peer, signal)`——少传参数会让 signal 落进 uplink，
-     * 宿主在 `AbortSignal.any([signal, …])` 处报 "Received undefined"（实测）。
-     */
-    open(
-      endpoint: string,
-      payload: unknown,
-      uplink: unknown,
-      peer: unknown,
-      signal: AbortSignal,
-    ): Promise<AsyncIterable<unknown>>
-  }
 }
 
 /** The plugin-side facts the gateway needs (implemented in `index.ts`). */
@@ -121,14 +103,15 @@ export interface ModernGatewayContext {
   effect(callback: () => () => void, label?: string): unknown
 }
 
-/** One logical mux stream owned by a connection generation. */
-interface StreamWork {
-  abort: AbortController
-  correlation: StreamCorrelation
-}
-
 export interface ModernGateway {
   handleHttp(req: IncomingMessage, res: ServerResponse, forward: (req: IncomingMessage, res: ServerResponse) => void): Promise<boolean>
+  /**
+   * 升级路由的唯一入口：
+   * - `/api/remote.mux` → 本插件**透明代理**（`proxyMuxUpgrade`，Issue #6 的逐帧归属过滤）；
+   *   我们自己的上游连接（带 nonce 头）与 `DSH_AUTH_MUX_PROXY=0` 的排障退避则直通；
+   * - 其他升级路径 → 按 `upgrade` 策略裁决（默认仅管理员，可用 `registerPolicy` 逐条放开），
+   *   并在连接存续期内监视登录态失效后主动断开。
+   */
   handleUpgrade(
     req: IncomingMessage,
     socket: Duplex,
@@ -245,75 +228,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/**
- * 按**登录归属**裁决一条「宿主 → 客户端」的 mux 帧（Issue #6 的核心修复，纯函数便于回归测试）：
- * 返回 `undefined` 表示丢弃；返回新对象表示改写后转发；返回原对象表示原样转发。
- *
- * 为什么必须做在这里：宿主把 mux 通道当「单用户」用，`workspace/follow` 会把**全部**工作区推给
- * 每个连接。实测泄漏形态有三种，且都不含顶层 `sessionId`：
- *   - `{type:'baseline', value:{items:[{workspaceId…}]}}`（初始全量，最容易漏掉）
- *   - `{type:'upsert', workspace:{workspaceId…}}`
- *   - `{type:'order', workspaceIds:[…]}`（列表，需要**裁剪**而不是丢弃）
- * 管理员不受限；普通用户只看得到自己拥有的会话/工作区。
- */
-export function projectMuxFrame(
-  who: Principal,
-  frame: JsonObject,
-  lookup: { session(id: string): string; workspace(id: string): string },
-): JsonObject | undefined {
-  const entitledSession = (id: string): boolean => who.role === 'admin' || lookup.session(id) === who.username
-  const entitledWorkspace = (id: string): boolean => {
-    if (who.role === 'admin') return true
-    const owner = lookup.workspace(id)
-    return typeof owner === 'string' && owner !== '' && owner === who.username
-  }
-  const value = object(frame.value) ? (frame.value as JsonObject) : undefined
-  if (value === undefined) return frame
-  const sessionId = typeof value.sessionId === 'string' ? value.sessionId : undefined
-  if (sessionId !== undefined && sessionId !== '' && !entitledSession(sessionId)) return undefined
-  if (object(value.workspace)) {
-    const inner = value.workspace as JsonObject
-    const id = typeof inner.workspaceId === 'string' ? inner.workspaceId : undefined
-    if (id !== undefined && id !== '' && !entitledWorkspace(id)) return undefined
-  }
-  const bare = typeof value.workspaceId === 'string' ? value.workspaceId : undefined
-  if (bare !== undefined && bare !== '' && !entitledWorkspace(bare)) return undefined
-  if (who.role !== 'admin' && Array.isArray(value.workspaceIds)) {
-    const all = value.workspaceIds as unknown[]
-    const kept = all.filter((x): x is string => typeof x === 'string' && entitledWorkspace(x))
-    if (kept.length !== all.length) return { ...frame, value: { ...value, workspaceIds: kept } }
-  }
-  if (value.type === 'baseline' && object(value.value)) {
-    const body = value.value as JsonObject
-    let changed = false
-    const nextBody: JsonObject = { ...body }
-    if (Array.isArray(body.items)) {
-      const items = body.items as unknown[]
-      const kept = items.filter((entry) => {
-        if (!object(entry)) return true
-        const item = entry as JsonObject
-        const wid = typeof item.workspaceId === 'string' ? item.workspaceId : undefined
-        if (wid !== undefined && wid !== '' && !entitledWorkspace(wid)) return false
-        const sid = typeof item.sessionId === 'string' ? item.sessionId : undefined
-        return !(sid !== undefined && sid !== '' && !entitledSession(sid))
-      })
-      if (kept.length !== items.length) { changed = true; nextBody.items = kept }
-    }
-    // `projections` 的键语义未知：只在**条目自身**携带未授权 sessionId 时剔除，绝不按未知键名猜测。
-    if (object(body.projections)) {
-      const projections = body.projections as JsonObject
-      const kept = Object.entries(projections).filter(([, entry]) => {
-        if (!object(entry)) return true
-        const sid = typeof (entry as JsonObject).sessionId === 'string' ? (entry as JsonObject).sessionId as string : undefined
-        return !(sid !== undefined && sid !== '' && !entitledSession(sid))
-      })
-      if (kept.length !== Object.keys(projections).length) { changed = true; nextBody.projections = Object.fromEntries(kept) }
-    }
-    if (changed) return { ...frame, value: { ...value, value: nextBody } }
-  }
-  return frame
-}
-
 export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth): ModernGateway {
   const policy: ModernPolicy = createModernPolicy(auth, {
     ...(auth.entitlement === undefined ? {} : { entitlement: auth.entitlement }),
@@ -322,7 +236,6 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
   const principalByRequest = new WeakMap<IncomingMessage, Principal>()
   const correlations = new Set<StreamCorrelation>()
   const downstreamSockets = new Set<Duplex>()
-  const sockets = new WebSocketServer({ noServer: true, maxPayload: MAX_BODY })
   const principal = (req: IncomingMessage): Principal | undefined => auth.principal(req)
   const publicApi: UiAuthPublicApi = Object.freeze({
     ready: auth.ready,
@@ -511,126 +424,34 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
     if (admitted.status !== undefined) { reject(admitted.status); return }
     const who = admitted.who
     const pathname = new URL(req.url as string, 'http://local').pathname
-    if (pathname !== MUX_PATH) {
-      const rule = extension('upgrade', { pathname })
-      const pass = (): void => {
-        downstreamSockets.add(socket)
-        const timer = setInterval(() => {
-          const current = principal(req)
-          if (current?.username !== who.username || current.role !== who.role) socket.destroy()
-        }, 1000)
-        timer.unref()
-        socket.once('close', () => { clearInterval(timer); downstreamSockets.delete(socket) })
-        forward(req, socket, head)
-      }
-      if (rule === undefined) { if (who.role === 'admin') pass(); else reject(403); return }
-      Promise.resolve(rule.authorize(who, req)).then(granted => {
-        if (granted && principal(req) !== undefined) pass()
-        else reject(403)
-      }, () => reject(403))
+    if (pathname === MUX_PATH) {
+      // mux 主通道：默认由本插件透明代理（Issue #6 的逐帧归属过滤）。
+      // 例外两条都必须直通宿主：① 我们自己的上游连接（带 nonce 头，否则自我递归）；
+      // ② `DSH_AUTH_MUX_PROXY=0` 的排障退避（退避后跨用户泄漏会重现）。
+      if (process.env.DSH_AUTH_MUX_PROXY === '0' || isOwnMuxProxyRequest(req)) { forward(req, socket, head); return }
+      proxyMuxUpgrade(req, socket, head, { host: req.headers.host ?? '', cookie: req.headers.cookie, who })
       return
     }
-    const gateway = ctx.get('typertGateway') as TypertGateway | undefined
-    const wireStream = gateway?.wireStream
-    if (wireStream?.open === undefined) { reject(503); return }
-    sockets.handleUpgrade(req, socket, head, (ws: WebSocket) => {
-      const active = new Map<string, StreamWork>()
-      const login = auth.loginKey(req)
-      const initialRole = who.role
-      let writes: Promise<void> = Promise.resolve()
-      const alive = (): Principal | undefined => {
+    const rule = extension('upgrade', { pathname })
+    const pass = (): void => {
+      downstreamSockets.add(socket)
+      const timer = setInterval(() => {
         const current = principal(req)
-        return current?.username === who.username && current.role === initialRole && auth.loginKey(req) === login ? current : undefined
-      }
-      const send = (value: unknown): Promise<void> => {
-        writes = writes.then(() => new Promise<void>((resolve, rejectSend) => {
-          if (alive() === undefined || ws.readyState !== WebSocket.OPEN) { rejectSend(denial()); return }
-          const serialized = JSON.stringify(value)
-          if (Buffer.byteLength(serialized) > MAX_BODY || ws.bufferedAmount > MAX_BODY) { ws.close(1009, 'Stream limit exceeded'); rejectSend(denial()); return }
-          ws.send(serialized, error => error ? rejectSend(error) : resolve())
-        }))
-        return writes
-      }
-      const timer = setInterval(() => { if (alive() === undefined) ws.close(1008, 'Login expired') }, 1000)
+        if (current?.username !== who.username || current.role !== who.role) socket.destroy()
+      }, 1000)
       timer.unref()
-      ws.on('error', () => ws.terminate())
-      ws.on('close', () => {
-        clearInterval(timer)
-        for (const work of active.values()) { work.abort.abort(); correlations.delete(work.correlation) }
-      })
-      ws.on('message', (bytes: Buffer, binary: boolean) => {
-        let message: JsonObject | undefined
-        try { message = JSON.parse(bytes.toString()) as JsonObject } catch { ws.close(1008, 'Invalid stream request'); return }
-        if (binary || alive() === undefined || !nonempty(message?.streamId)) { ws.close(1008, 'Invalid stream request'); return }
-        if (message.type === 'cancel' && Object.keys(message).length === 2) {
-          active.get(message.streamId as string)?.abort.abort(); return
-        }
-        if (message.type !== 'open' || Object.keys(message).length !== 4 || typeof message.endpoint !== 'string'
-          || active.has(message.streamId as string) || active.size >= MAX_STREAMS) { ws.close(1008, 'Invalid stream request'); return }
-        const streamId = message.streamId as string
-        const endpoint = message.endpoint
-        const payload = message.payload
-        const work: StreamWork = { abort: new AbortController(), correlation: { login, events: new Set<string>() } }
-        active.set(streamId, work)
-        correlations.add(work.correlation)
-        void (async () => {
-          try {
-            const current = alive()
-            const rule = extension('stream', endpoint)
-            if (current === undefined || !(rule ? await rule.authorize(current, payload) : await policy.authorize(current, endpoint, payload, true))) throw denial()
-            const source = await wireStream.open(endpoint, payload, undefined, who, work.abort.signal)
-            for await (const value of source) {
-              // 宿主 $events 的首帧是 ready，其 clientId 就是浏览器后续在 $events/result 里回传的标识；
-              // 必须把它记入相关性，绑定才会成立（Issue #2 的行级根因就在这里）。
-              if (object(value) && (value as JsonObject).type === 'ready' && typeof (value as JsonObject).clientId === 'string') {
-                work.correlation.clientId = (value as JsonObject).clientId as string
-              }
-              if (work.abort.signal.aborted) break
-              const watcher = alive()
-              if (watcher === undefined) throw denial()
-              if (rule !== undefined && extension('stream', endpoint) !== rule) throw denial()
-              // Recheck ownership as well as login state throughout a scoped stream.
-              if (!(rule ? await rule.authorize(watcher, payload) : await policy.authorize(watcher, endpoint, payload, true))) throw denial()
-              const output = rule ? await rule.project(watcher, value) : policy.frame(watcher, endpoint, value, work.correlation)
-              // 诊断开关：默认不输出；排查"事件不流动/被过滤"时开启（宿主是否送来、是否被丢弃一目了然）。
-              if (process.env.DSH_AUTH_DEBUG_STREAM === '1' && object(value) && (value as JsonObject).type === 'emit') {
-                console.error(`[dsh-ui-auth][stream] emit=${String((value as JsonObject).event)} -> ${output === null ? 'dropped' : 'delivered'}`)
-              }
-              const frame = object(value) ? value : undefined
-              if (endpoint === '$events' && frame?.type === 'waterfall' && output === null) {
-                // A hidden recipient must release its delivery, otherwise an owner's "next"
-                // waits forever on users who were correctly not shown the interaction.
-                const endpoint = '$events/result'
-                const connection = ctx.get('connection') as NativeConnection
-                const response = await connection.createSharedFetchHandler('/api').fetch(new Request(`http://dsh.internal/api/${endpoint}`, {
-                  method: 'POST', headers: { 'content-type': 'application/json' },
-                  body: JSON.stringify({ type: 'client-request', rpcId: frame.eventId, method: endpoint, payload: { args: {
-                    clientId: work.correlation.clientId, eventId: frame.eventId, outcome: { kind: 'next' },
-                  } } }),
-                }))
-                const settled = await response.json() as { result?: { ok?: boolean } }
-                if (!settled.result?.ok) throw denial()
-              }
-              if (output !== null) await send({ type: 'item', streamId, value: output })
-            }
-            if (!work.abort.signal.aborted) await send({ type: 'end', streamId })
-          } catch (error) {
-            // 流失败的**真实原因**必须留下痕迹：否则前端只看到 auth/forbidden，无法定位（本仓库吃过这个亏）。
-            console.error(`[dsh-ui-auth] 流处理失败（endpoint=${String(endpoint)}）：${error instanceof Error ? error.message : String(error)}`)
-            if (!work.abort.signal.aborted) {
-              await send({ type: 'error', streamId, error: { code: 'auth/forbidden', message: 'Stream unavailable or access denied', details: {} } })
-                .catch(() => ws.close(1008))
-            }
-          } finally { correlations.delete(work.correlation); active.delete(streamId) }
-        })()
-      })
-    })
+      socket.once('close', () => { clearInterval(timer); downstreamSockets.delete(socket) })
+      forward(req, socket, head)
+    }
+    if (rule === undefined) { if (who.role === 'admin') pass(); else reject(403); return }
+    Promise.resolve(rule.authorize(who, req)).then(granted => {
+      if (granted && principal(req) !== undefined) pass()
+      else reject(403)
+    }, () => reject(403))
   }
 
   ctx.effect(() => () => {
-    for (const socket of sockets.clients) socket.terminate()
     for (const socket of downstreamSockets) socket.destroy()
-    sockets.close()
     policies.clear()
     correlations.clear()
   }, 'dsh-ui-auth: modern gateway')
@@ -654,9 +475,14 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
     } catch (error) { return undefined }
   }
 
-  /** 在帧里找字符串字段：顶层、payload、result 各看一层（mux 帧的两种常见形态）。 */
+  /**
+   * 在帧里找字符串字段：顶层、`value`、`payload`、`result` 各看一层。
+   * `value` 必须在内——宿主实际发的帧是 `{type:'item', streamId, value:{…}}`，
+   * 会话/事件标识都在 `value` 里（漏掉它会让 `$events/result` 的严格属主绑定永远匹配不到，
+   * 实测踩过：`eventId` 落在 `value.eventId`）。
+   */
   const fieldOf = (frame: JsonObject, name: string): string | undefined => {
-    const scopes: Array<unknown> = [frame, frame.payload, frame.result]
+    const scopes: Array<unknown> = [frame, frame.value, frame.payload, frame.result]
     for (const scope of scopes) {
       if (object(scope) && typeof (scope as JsonObject)[name] === 'string' && (scope as JsonObject)[name] !== '') {
         return (scope as JsonObject)[name] as string
@@ -665,13 +491,31 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
     return undefined
   }
 
-  /** 该登录是否有权看到这个会话的数据（管理员不受限）。 */
-  const entitledTo = (who: Principal, sessionId: string): boolean =>
-    who.role === 'admin' || auth.session(sessionId) === who.username
+  const debugStream = (message: string): void => {
+    if (process.env.DSH_AUTH_DEBUG_STREAM === '1') console.error('[dsh-ui-auth] 代理：' + message)
+  }
 
-  /** 逐帧归属过滤的纯函数实现在模块级（`projectMuxFrame`），这里只绑定本网关的归属查询。 */
-  const projectFrame = (who: Principal, frame: JsonObject): JsonObject | undefined =>
-    projectMuxFrame(who, frame, auth)
+  /**
+   * 被**隐藏**的 waterfall 接收方必须代替自己释放投递，否则属主的 `next` 会永远挂住
+   * （宿主按扇出收齐应答）。这是旧自研 mux 路径的语义，代理路径同样需要，故在此保活。
+   */
+  const releaseWaterfall = async (clientId: string | undefined, eventId: string): Promise<void> => {
+    if (clientId === undefined || clientId === '' || eventId === '') return
+    const connection = ctx.get('connection') as NativeConnection | undefined
+    if (connection?.createSharedFetchHandler === undefined) return
+    try {
+      const response = await connection.createSharedFetchHandler('/api').fetch(new Request('http://dsh.internal/api/$events/result', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'client-request', rpcId: eventId, method: '$events/result', payload: { args: {
+          clientId, eventId, outcome: { kind: 'next' },
+        } } }),
+      }))
+      const settled = await response.json() as { result?: { ok?: boolean } }
+      if (settled.result?.ok !== true) console.error('[dsh-ui-auth] 释放被隐藏的 waterfall 投递未被宿主确认')
+    } catch (error) {
+      console.error('[dsh-ui-auth] 释放被隐藏的 waterfall 投递异常: ' + errorMessage(error))
+    }
+  }
 
   /**
    * 代理一次 mux 升级。握手交给 `ws`（因此客户端看到的仍是标准 WS 握手），
@@ -704,37 +548,97 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
         try { client.close() } catch (error) { /* ignore */ }
         try { upstream.close() } catch (error) { /* ignore */ }
       }
+      // streamId → endpoint：客户端 `open` 帧给出端点，逐帧策略需要它才能裁决。
+      const endpoints = new Map<string, string>()
+      // 被拒的流：不转发其 open，也记住它以便丢弃迟到帧（fail-closed）。
+      const denied = new Set<string>()
+      const pendingUplink: Array<{ data: WebSocket.RawData; isBinary: boolean }> = []
+      let uplinkQueue: Promise<void> = Promise.resolve()
+      /**
+       * 上行帧（客户端 → 宿主）。两件事必须在这里做：
+       * ① **打开流也要按登录归属授权**——宿主把自己当单用户，会按请求里的 sessionId 服务任何连接，
+       *    只过滤下行帧是不够的（普通用户能直接订阅他人会话内容，这是 #6 的另一半）；
+       * ② 上游尚未连上时**排队而不是丢弃**（浏览器握手完成即发 open，上游多半还在 CONNECTING，
+       *    丢弃会静默丢掉首帧，正是"连上了却没数据"的成因）。
+       */
+      const deliverUplink = async (data: WebSocket.RawData, isBinary: boolean): Promise<void> => {
+        const frame = isBinary ? undefined : parseFrame(data.toString())
+        const streamId = frame === undefined ? undefined : fieldOf(frame, 'streamId')
+        if (frame !== undefined && streamId !== undefined) {
+          if (frame.type === 'open' && typeof frame.endpoint === 'string') {
+            const endpoint = frame.endpoint
+            let granted = false
+            try {
+              granted = await policy.authorize(info.who, endpoint, frame.payload, true)
+            } catch (error) {
+              console.error('[dsh-ui-auth] 流授权判定异常（endpoint=' + endpoint + '）：' + errorMessage(error))
+            }
+            if (!granted) {
+              denied.add(streamId)
+              debugStream(`拒绝打开 endpoint=${endpoint} who=${info.who.username}/${info.who.role}`)
+              try {
+                client.send(JSON.stringify({ type: 'error', streamId, error: { code: 'auth/forbidden', message: 'Stream unavailable or access denied', details: {} } }))
+              } catch (error) { /* ignore */ }
+              return
+            }
+            endpoints.set(streamId, endpoint)
+          } else if (frame.type === 'cancel') {
+            endpoints.delete(streamId)
+            denied.delete(streamId)
+          }
+        }
+        if (upstream.readyState !== WebSocket.OPEN) { pendingUplink.push({ data, isBinary }); return }
+        await new Promise<void>((resolve) => {
+          try { upstream.send(data, { binary: isBinary }, () => resolve()) } catch (error) { resolve() }
+        })
+      }
+      const submitUplink = (data: WebSocket.RawData, isBinary: boolean): void => {
+        uplinkQueue = uplinkQueue
+          .then(() => deliverUplink(data, isBinary))
+          .catch((error) => { console.error('[dsh-ui-auth] 上行帧处理异常: ' + errorMessage(error)) })
+      }
+      upstream.on('open', () => {
+        for (const item of pendingUplink.splice(0)) submitUplink(item.data, item.isBinary)
+      })
       upstream.on('message', (data: WebSocket.RawData, isBinary: boolean) => {
         if (isBinary) { try { client.send(data, { binary: true }) } catch (error) { /* ignore */ } ; return }
         const raw = data.toString()
         const frame = parseFrame(raw)
-        if (frame !== undefined) {
-          const sessionId = fieldOf(frame, 'sessionId')
-          // 他人会话的帧**不转发**（这是 #6 的泄漏点）
-          if (sessionId !== undefined && !entitledTo(info.who, sessionId)) return
-          const projected = projectFrame(info.who, frame)
-          if (projected === undefined) {
-            if (process.env.DSH_AUTH_DEBUG_STREAM === '1') {
-              console.error(`[dsh-ui-auth] 代理丢弃帧 who=${info.who.username}/${info.who.role} frame=${raw.slice(0, 200)}`)
-            }
-            return
-          }
-          const eventId = fieldOf(frame, 'eventId')
-          if (eventId !== undefined) correlation.events.add(eventId)
-          if (projected !== frame) {
-            const text = JSON.stringify(projected)
-            if (process.env.DSH_AUTH_DEBUG_STREAM === '1') {
-              console.error(`[dsh-ui-auth] 代理改写帧 who=${info.who.username}/${info.who.role} 原=${raw.slice(0, 160)} 改=${text.slice(0, 160)}`)
-            }
-            try { client.send(text) } catch (error) { /* ignore */ }
-            return
-          }
+        if (frame === undefined) { try { client.send(raw) } catch (error) { /* ignore */ } ; return }
+        const streamId = fieldOf(frame, 'streamId')
+        // `item` 帧带 streamId（端点从客户端 open 记录里查）；连接级帧（ready/emit）属于 `$events`。
+        const wrapped = frame.type === 'item' && streamId !== undefined
+        const endpoint = streamId === undefined ? '$events' : endpoints.get(streamId)
+        if (endpoint === undefined) {
+          // 不认识的流一律丢弃（fail-closed）：绝不转发未经裁决的数据。
+          debugStream(`丢弃未知流的帧 streamId=${String(streamId)}`)
+          return
         }
-        try { client.send(raw) } catch (error) { /* ignore */ }
+        const value: unknown = wrapped ? frame.value : frame
+        let output: unknown
+        try {
+          // 逐帧裁决复用**策略层**的 `frame()`（唯一事实来源：会话/工作区/事件归属与投影都在那里，且有单测）。
+          output = policy.frame(info.who, endpoint, value, correlation)
+        } catch (error) {
+          console.error('[dsh-ui-auth] 帧策略异常（endpoint=' + endpoint + '）：' + errorMessage(error))
+          return
+        }
+        if (output === null) {
+          if (endpoint === '$events' && object(value) && (value as JsonObject).type === 'waterfall') {
+            const eventId = (value as JsonObject).eventId
+            void releaseWaterfall(correlation.clientId, typeof eventId === 'string' ? eventId : '')
+          }
+          debugStream(`丢弃帧 who=${info.who.username}/${info.who.role} endpoint=${endpoint} frame=${raw.slice(0, 160)}`)
+          return
+        }
+        const text = output === value
+          ? raw
+          : JSON.stringify(wrapped ? { ...frame, value: output } : output)
+        if (text !== raw) debugStream(`改写帧 who=${info.who.username}/${info.who.role} endpoint=${endpoint} 原=${raw.slice(0, 140)} 改=${text.slice(0, 140)}`)
+        try { client.send(text) } catch (error) { /* ignore */ }
       })
       client.on('message', (data: WebSocket.RawData, isBinary: boolean) => {
-        if (upstream.readyState !== WebSocket.OPEN) return
-        try { upstream.send(data, { binary: isBinary }) } catch (error) { /* ignore */ }
+        submitUplink(data, isBinary)
       })
         client.on('close', shutdown)
         client.on('error', shutdown)
