@@ -937,6 +937,20 @@ check('DEPLOY', '登录失败锁定按源 IP（反向代理下聚合，README �
   check('WS-ISO', '自研 mux 死代码已移除（不再经 typertGateway.wireStream 自建流）',
     !gateway.includes('wireStream') && !gateway.includes('MAX_STREAMS'))
 }
+{
+  // `$events/result`（审批/提问应答）必须**证明本登录确实被投递过该事件**。
+  // 历史修法一度放宽成"clientId/eventId 非空即放行"，那等于给任何已登录调用者一个跨会话应答注入面；
+  // 现在帧观察是必然存在的（升级由本插件代理），退档已删除 ⇒ 未被投递过的 eventId 必须 403。
+  const r = makeRes()
+  server.emit('request', makeReq('POST', '/api/$events/result', test1Cookie, JSON.stringify({
+    type: 'client-request', rpcId: 'ws-iso-1', method: '$events/result',
+    payload: { args: { clientId: 'any-client', eventId: 'never-delivered' } },
+  })), r)
+  await settle()
+  check('WS-ISO', '$events/result 不接受未被投递过的事件（无形状退档）', r.status === 403, 'status=' + r.status)
+  const source = readFileSync(new URL('../lib/modern-gateway.js', import.meta.url), 'utf8')
+  check('WS-ISO', '退档形状校验已从源码移除', !source.includes('mine.length === 0'))
+}
 
 const failed = results.filter((r) => !r.pass)
 // 汇总（此处计算才覆盖全部用例）

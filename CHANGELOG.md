@@ -29,20 +29,25 @@
    （mux → 代理；其他路径 → `upgrade` 策略，默认仅管理员、`uiAuth.registerPolicy()` 逐条放开，并监视登录态失效后断开）。
    顺带修正：`fieldOf()` 现在也看 `value` 一层——宿主实际把 `eventId` 放在 `value.eventId`，
    此前的 `$events/result` 严格属主绑定**从未匹配到**过。
-3. **`$events/result`（审批/提问应答）** 不再只做形状校验：策略层直接拒绝，改由网关按
-   "本连接确实收到过该事件帧"关联放行，无法用 payload 自证属主、也无法应答他人会话（Issue #2 的正解）。
+3. **`$events/result`（审批/提问应答）不再有形状退档**：策略层直接拒绝，改由网关按
+   "本登录确实**被投递过**该事件帧"关联放行（`correlation.events`）。此前的修法在"本登录没有可观察的 mux 连接"时
+   退回"`clientId`/`eventId` 非空即放行"——那等于给任何已登录调用者一个**跨会话应答注入面**（不需要任何被投递的事件）。
+   现在帧观察必然存在（升级由本插件代理），退档已删除：拿不出被投递过的 `eventId` 就 403，fail-closed。
+   回归：`WS-ISO` 新增行为用例（普通用户提交未被投递的 `eventId` → 403）+ 源码断言（`mine.length === 0` 不再存在）。
 
 **其他修复**
 
 4. **安全验证报告的分类汇总不反映事实**：`test/security-suite.mjs` 的分类表格在文件中部计算，
    其后的用例（`I18N` / `WS-ISO` / v0.7.0 各面）在表格里恒显示 `0/0`。现已移到全部用例之后，
-   并让未登记的分类也进入表格（本次修正后：**162/162 通过、17 个分类**）。
+   并让未登记的分类也进入表格（本次修正后：**164/164 通过、17 个分类**，其中 `WS-ISO` 19 项）。
 5. 面板回归新增 `DSH_PANEL_VERBOSE=1`（打印全部 `/api` 调用）。修复后普通用户面板少一次 `/api/session/create`——
    原因是**泄漏被堵住后普通用户看不到任何工作区，界面没有可建会话之处**，属修复的正常副作用。
+6. 测试脚本去重：删除两个与 `test/live-mux-leak.mjs` 重叠的手工探针（`live-mux-frames.mjs`、`live-mux-isolation.mjs`），
+   并修正 README 失效锚点、`SECURITY-VERIFICATION.md` 的过期结论行与 `ROADMAP.md` 台账。
 
 **文档**
 
-6. README「已知边界（v0.7.0）」中"互不信任的多用户部署请勿暴露面板"的限制**已移除**，
+7. README「已知边界（v0.7.0）」中"互不信任的多用户部署请勿暴露面板"的限制**已移除**，
    改为 v0.7.1 的修复说明与自查命令；同步更新 `docs/SECURITY.md` §6/§7/§8、`docs/ARCHITECTURE.md`、
    `docs/DSH-0.2.0-COMPATIBILITY.md`（含一处过期的"普通用户 → 403"证据行）、`docs/OPERATIONS.md` 上线清单、
    `docs/RBAC-MODEL-PROFILES.md` 与 `docs/SECURITY-VERIFICATION.md`。

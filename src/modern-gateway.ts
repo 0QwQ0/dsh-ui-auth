@@ -369,19 +369,17 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
     }
     if (endpoint === '$events/result') {
       const args = remoteArgs(envelope.payload)
-      // 严格绑定：只有当**本登录确实收到过该事件**时才允许应答（correlations 由我们的 mux 观察填充）。
-      // 注意：旧实现的 `correlation.clientId === args.clientId` 永远不可能成立——相关性对象里
-      // 只有 `{login, events}`，从来没有 clientId（见本文件 StreamCorrelation 的构造处），
-      // 所以审批/提问应答必然 403 并导致「点击 → 重连 → 再点击」死循环（Issue #2）。
-      // 现在：若本登录尚无可观察的连接（mux 升级直通宿主、我们看不到帧），退回形状校验以免功能不可用；
-      // 一旦恢复帧观察（Issue #6 的根因修复），绑定**自动**变回严格属主校验。
-      // ⚠️ 残余风险（已记入 docs/SECURITY.md 与 README 已知边界）：在"形状校验"这一档，
-      // 已登录用户可提交任意 $events/result（跨用户应答注入）。
+      // 严格属主绑定：只有**本登录确实被投递过该事件**时才允许应答。相关性由 mux 代理在转发
+      // waterfall 帧时填充（`policy.frame` 记录 eventId），因此这里不再有"看不到帧"的档位。
+      // 历史教训：旧实现的 `correlation.clientId === args.clientId` 永远不可能成立（相关性对象里
+      // 只有 `{login, events}`），于是审批/提问应答必然 403，界面陷入「点击 → 重连 → 再点击」（Issue #2）；
+      // 随后的修法一度**放宽为"形状非空即放行"**，那给了任意已登录调用者一个跨会话应答注入面
+      // （不需要任何被投递的事件，只要填两个字符串）。现在帧观察是必然存在的（升级被本插件代理），
+      // 所以退档已删除：拿不出被投递过的 eventId 就拒绝，fail-closed。
       const mine = [...correlations].filter(correlation => correlation.login === auth.loginKey(req))
       allowed = object(args)
-        && (mine.length === 0
-          ? nonempty((args as JsonObject).clientId) && nonempty((args as JsonObject).eventId)
-          : mine.some(correlation => correlation.events.has((args as JsonObject).eventId as string)))
+        && nonempty((args as JsonObject).eventId)
+        && mine.some(correlation => correlation.events.has((args as JsonObject).eventId as string))
     } else {
       const rule = extension('rpc', endpoint)
       allowed = rule ? await rule.authorize(who, envelope.payload) : await policy.authorize(who, endpoint, envelope.payload)
@@ -456,11 +454,13 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
     correlations.clear()
   }, 'dsh-ui-auth: modern gateway')
   // ===== mux 透明代理（Issue #6 根因修复）=====
-  // 接住客户端的 mux 升级，再以 WS 客户端连宿主的 mux，帧**原样转发**，但在「宿主 → 客户端」方向做两件事：
-  //   1) 丢弃**非本人会话**的帧 —— 修复跨用户事件实时泄漏（Issue #6）；
-  //   2) 记录已投递的事件 id —— 让 $events/result 恢复**严格属主绑定**（Issue #2 的正解）。
-  // 之所以用代理而不自己实现 mux：旧实现要解析并重放 mux 语义，与 0.2.0 客户端协议不兼容（界面会无限
-  // 「重新连接中」）；代理**不碰语义**，只按 JSON 里的 sessionId/eventId 判断，协议无关。
+  // 接住客户端的 mux 升级，再以 WS 客户端连宿主的 mux，两个方向都按登录归属把关：
+  //   **上行**：记录 `open` 的 streamId → endpoint，并先 `policy.authorize(...)`；未授权不转发（宿主是单用户语义，
+  //            会照单服务任何 sessionId，只过滤下行不够）。上游未连上时上行帧排队，不丢首帧。
+  //   **下行**：逐帧 `policy.frame()`（丢弃/裁剪/投影，未知流 fail-closed），并记录已投递的 waterfall eventId —— 
+  //            让 `$events/result` 保持严格属主绑定（Issue #2 的正解）。
+  // 之所以用代理而不自己实现 mux：旧实现要重放 mux 语义，与 0.2.0 客户端协议不兼容（界面会无限「重新连接中」）；
+  // 代理**不碰语义**，只按 JSON 里的归属字段与策略层裁决，协议无关。
   // 递归防护：代理自己的上游连接会再次经过本闸门，必须能被识别并直通，否则无限自我连接（进程耗尽静默退出）。
   const MUX_PROXY_HEADER = 'x-dsh-ui-auth-mux-proxy'
   const muxProxyNonce = randomUUID()

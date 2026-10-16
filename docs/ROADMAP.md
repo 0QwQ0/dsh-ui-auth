@@ -25,12 +25,22 @@
 | WP7 文档（三档表格） | ✅ | `2bbe67f` | 新 `docs/DSH-0.2.0-COMPATIBILITY.md`；README 三档表 + legacy 结束声明 |
 | **WP4 R1-ii 实现** | ✅ | `fc68679` | 每配置一条 provider 路由 + `resolveAuth` 读我们的加密存储（`x-api-key`），宿主缺包时明确停用该路径 |
 | **WP6 客户端半边** | ✅ | `58ce972` `bbd8e69` `9444689` | 模型与密钥页（按用户）、分享管理页（管理员）、账户页对普通用户替换为说明、移除 nth-child hack |
-| **WP8 测试** | 🔄 部分 | `7e6939a` | `test:compat:0.2.0` 在真实实例上 **38/38**；**多版本矩阵未跑**（中间版本仍标"待实测"） |
-| **WP9 发版准备** | ✅ 准备完成 | 本次 | 版本 `0.7.0` + CHANGELOG 已就绪；**发版待所有者确认**（按既有规范：Release 标题仅版本号） |
+| **WP8 测试** | 🔄 部分 | `7e6939a` | `test:compat:0.2.0` 在真实实例上 **38/38**；**多版本矩阵未跑**（中间版本仍标"待实测"）；mux 两个半边另有活体 A/B `npm run test:mux:leak`（手工，需真实实例） |
+| **WP9 发版准备** | ✅ 0.7.0 已发布 / ⏳ 0.7.1 待所有者确认 | `495cbb1` `42fb0f6` | 0.7.0 已发（npm `latest` + provenance）；**0.7.1（含 Issue #6 两个半边）与本轮清理已提交在 `main`，尚未推送/发布** |
 | **WP10 其余** | 🔄 部分 | `4377d88` | 发布包瘦身 ✅（`build/` 移出）；`qrcode` 依赖**按所有者要求不改动**；`process.env` 收敛未做 |
 
+### v0.7.1 增补（2026-10-16，见 `CHANGELOG.md`）
+
+| 项 | 状态 | 提交 | 备注 |
+|---|---|---|---|
+| Issue #6 下行：mux 帧按登录归属过滤 | ✅ | `495cbb1` | 代理 `/api/remote.mux`，逐帧复用策略层 `policy.frame()`；真实浏览器 A/B 证明直通泄漏、代理为 0 |
+| Issue #6 上行：`open` 先授权 | ✅ | `42fb0f6` | 宿主按单用户语义会服务任何 `sessionId`；未授权 `open` 不转发 |
+| 自研 mux 死代码删除 + 升级入口收敛 | ✅ | `42fb0f6` | `wireStream`/`MAX_STREAMS`/`StreamWork`/`sockets` 全删；其他升级路径重新纳入 `upgrade` 策略 |
+| `$events/result` 退档删除（应答注入面） | ✅ | 本轮 | 必须能证明"本登录被投递过该 eventId"，否则 403；`WS-ISO` 行为回归 |
+| 安全套件分类汇总位置错误 | ✅ | `495cbb1` | 汇总移到全部用例之后，未登记分类也进表（现 **164/164、17 分类**） |
+
 **接续约定**：每个增量都必须 `tsc` + `build` + `npm test` 全绿后提交；`main` 只在全部完成且所有者确认发版后才合并。
-`npm test` 当前包含：security-suite 126/126、host-smoke、login-page-check、modern-policy 19/19、profile-crypto 7/7、profile-envelope 5/5、profile-service 7/7。
+`npm test` 当前包含：security-suite **164/164**（含 `WS-ISO` 19 项）、host-smoke、login-page-check、modern-policy、profile-crypto、profile-envelope、profile-service、user-routes、profile-keys、i18n。
 > 目标宿主：**DSH `0.2.0-rc.2`**（npm `latest`，rc 预发布——该仓库一贯以 rc 作为 latest）。
 > 破坏性变更：① 完全移除 legacy 传输线；② 模型 / API Key 改为**按用户隔离 + 管理员分享**；③ 兼容声明与页面权限重划。
 
