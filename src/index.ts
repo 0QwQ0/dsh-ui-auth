@@ -3060,6 +3060,16 @@ const COOKIE_NAME = 'dsh_auth_' + (() => {
         // 因此这里只要求"已认证会话"，不再按管理员收窄——收窄会让普通用户的界面永远停在"重新连接中"。
         // ⚠️ 已知残余风险（记录在 README/兼容性文档的「已知边界」）：宿主 mux 自身没有本插件的用户概念，
         // 逐帧按用户过滤需要网关在 WS 层做代理；旧的自研 mux 已证明与 0.2.0 客户端协议不兼容，故暂不启用。
+        // mux 通道走**我们的透明代理**：既保留"客户端能连上"（此前直通宿主的成果），
+        // 又恢复按用户过滤与事件投递登记（修 Issue #6 泄漏、Issue #2 的属主绑定）。
+        if (pathnameOf(req.url) === '/api/remote.mux') {
+          modern.proxyMuxUpgrade(req, socket, head, {
+            host: typeof req.headers.host === 'string' ? req.headers.host : '',
+            cookie: req.headers.cookie,
+            who: { username: who, role: ((state.users.get(who) || {}) as UserRecord).role === 'admin' ? 'admin' : 'user' },
+          })
+          return
+        }
         for (const fn of origUp) fn.call(server, req, socket, head)
       } catch (err) {
         try { socket.destroy() } catch (e) { /* ignore */ }
