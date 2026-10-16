@@ -27,8 +27,10 @@ const remote = async (cookie, endpoint, args) => {
     body: JSON.stringify({ type: 'client-request', rpcId: crypto.randomUUID(), method: endpoint, payload: { args: args ?? {} } }),
   })
   const text = await response.text()
-  try { return { status: response.status, value: JSON.parse(text)?.result?.value } } catch { return { status: response.status } }
+  try { return { status: response.status, value: JSON.parse(text)?.result?.value, raw: text } } catch { return { status: response.status, raw: text } }
 }
+/** 不依赖字段路径：从响应里直接找会话 id（形如 session-xxxxxxxx-…）。 */
+const sessionIdOf = (result) => (String(result.raw ?? '').match(/session-[0-9a-f][0-9a-f-]{6,}/) ?? [''])[0]
 const rpc = async (cookie, method, body) => {
   const response = await fetch(`${base}/auth/rpc/${method}`, {
     method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify(body ?? {}),
@@ -43,10 +45,13 @@ try {
   const adminPassword = /密码[:：]\s*(\S+)/.exec(fs.readFileSync(bootstrap, 'utf8'))?.[1] ?? ''
   const admin = await login('admin', adminPassword)
   check('准备：管理员登录（口令取自引导文件）', admin !== '')
-  await rpc(admin, 'createUser', { username: 'muxprobe1', password: 'Mux-Probe-1234!', role: 'user' })
-  await rpc(admin, 'createUser', { username: 'muxprobe2', password: 'Mux-Probe-2345!', role: 'user' })
-  const probe = await login('muxprobe1', 'Mux-Probe-1234!')
-  const other = await login('muxprobe2', 'Mux-Probe-2345!')
+  // 唯一用户名：插件对被删除的用户名写永久墓碑，固定名字第二次运行无法重建
+  const u1 = 'muxprobe' + Date.now().toString(36)
+  const u2 = u1 + 'b'
+  await rpc(admin, 'createUser', { username: u1, password: 'Mux-Probe-1234!', role: 'user' })
+  await rpc(admin, 'createUser', { username: u2, password: 'Mux-Probe-2345!', role: 'user' })
+  const probe = await login(u1, 'Mux-Probe-1234!')
+  const other = await login(u2, 'Mux-Probe-2345!')
   check('准备：两个普通用户登录', probe !== '' && other !== '')
 
   // 两条 mux 连接，观察帧
@@ -63,7 +68,7 @@ try {
 
   // ① 另一个用户建会话 → probe 不应收到它的任何帧
   const created = await remote(other, 'session/create', { request: {} })
-  const otherSession = created.value?.sessionId ?? created.value?.session?.sessionId ?? ''
+  const otherSession = sessionIdOf(created) + ''
   await new Promise((resolve) => setTimeout(resolve, 4000))
   const leaked = otherSession !== '' && frames.probe.some(text => text.includes(otherSession))
   check('不跨用户泄漏（Issue #6）：未收到他人会话的帧', otherSession !== '' && !leaked,
@@ -71,7 +76,7 @@ try {
 
   // ② 自己建会话 → 自己的帧应能收到（证明过滤没有一律丢弃）
   const mine = await remote(probe, 'session/create', { request: {} })
-  const mineSession = mine.value?.sessionId ?? mine.value?.session?.sessionId ?? ''
+  const mineSession = sessionIdOf(mine) + ''
   await new Promise((resolve) => setTimeout(resolve, 4000))
   const sawOwn = mineSession !== '' && frames.probe.some(text => text.includes(mineSession))
   check('自己的会话帧仍可收到（过滤未过度）', sawOwn, `自己的会话=${String(mineSession).slice(0, 12)} probe帧数=${frames.probe.length}`)
@@ -92,8 +97,8 @@ try {
   check('面板无"重新连接中"（未回归）', reconnectText === '(无)', `文案=${reconnectText} 连接日志=${logs.length}`)
   check('面板初始化继续', [...api].some(url => url.includes('session/list') || url.includes('session/create')), `api=${api.size} 个`)
 
-  await rpc(admin, 'deleteUser', { username: 'muxprobe1' })
-  await rpc(admin, 'deleteUser', { username: 'muxprobe2' })
+  await rpc(admin, 'deleteUser', { username: u1 })
+  await rpc(admin, 'deleteUser', { username: u2 })
 } catch (error) {
   check('执行过程未抛异常', false, String((error && error.message) || error).slice(0, 140))
 } finally {

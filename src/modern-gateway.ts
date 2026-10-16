@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { WebSocketServer, WebSocket } from 'ws'
@@ -134,6 +135,8 @@ export interface ModernGateway {
     head: Buffer,
     info: { host: string; cookie: string | undefined; who: Principal },
   ): void
+  /** 是否为我们自己代理上游连接（递归防护判定）。 */
+  isOwnMuxProxyRequest(req: IncomingMessage): boolean
   publicApi: UiAuthPublicApi
 }
 
@@ -547,7 +550,12 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
   //   2) 记录已投递的事件 id —— 让 $events/result 恢复**严格属主绑定**（Issue #2 的正解）。
   // 之所以用代理而不自己实现 mux：旧实现要解析并重放 mux 语义，与 0.2.0 客户端协议不兼容（界面会无限
   // 「重新连接中」）；代理**不碰语义**，只按 JSON 里的 sessionId/eventId 判断，协议无关。
+  // 递归防护：代理自己的上游连接会再次经过本闸门，必须能被识别并直通，否则无限自我连接（进程耗尽静默退出）。
+  const MUX_PROXY_HEADER = 'x-dsh-ui-auth-mux-proxy'
+  const muxProxyNonce = randomUUID()
   const muxSockets = new WebSocketServer({ noServer: true, maxPayload: MAX_BODY })
+  // ws 服务器自身也要有 error 监听：否则一次握手异常就能以未处理事件的形式终止宿主进程。
+  muxSockets.on('error', () => { /* 单次握手失败不应影响宿主 */ })
 
   const parseFrame = (raw: string): JsonObject | undefined => {
     try {
@@ -579,14 +587,15 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
     req: IncomingMessage, socket: Duplex, head: Buffer,
     info: { host: string; cookie: string | undefined; who: Principal },
   ): void {
-    muxSockets.handleUpgrade(req, socket, head, (client: WebSocket) => {
+    try {
+      muxSockets.handleUpgrade(req, socket, head, (client: WebSocket) => {
       const correlation: StreamCorrelation = { login: auth.loginKey(req), events: new Set<string>() }
       correlations.add(correlation)
       let upstream: WebSocket
       try {
         upstream = new WebSocket(`ws://${info.host}/api/remote.mux`, {
           maxPayload: MAX_BODY,
-          ...(info.cookie === undefined ? {} : { headers: { cookie: info.cookie } }),
+          headers: { ...(info.cookie === undefined ? {} : { cookie: info.cookie }), [MUX_PROXY_HEADER]: muxProxyNonce },
         })
       } catch (error) {
         correlations.delete(correlation)
@@ -618,12 +627,20 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
         if (upstream.readyState !== WebSocket.OPEN) return
         try { upstream.send(data, { binary: isBinary }) } catch (error) { /* ignore */ }
       })
-      client.on('close', shutdown)
-      client.on('error', shutdown)
-      upstream.on('close', shutdown)
-      upstream.on('error', shutdown)
-    })
+        client.on('close', shutdown)
+        client.on('error', shutdown)
+        upstream.on('close', shutdown)
+        upstream.on('error', shutdown)
+      })
+    } catch (error) {
+      try { socket.destroy() } catch (inner) { /* ignore */ }
+    }
   }
 
-  return { handleHttp, handleUpgrade, proxyMuxUpgrade, publicApi }
+  /** 该请求是否来自我们自己的 mux 代理上游连接（用于避免递归代理）。 */
+  function isOwnMuxProxyRequest(req: IncomingMessage): boolean {
+    return req.headers[MUX_PROXY_HEADER] === muxProxyNonce
+  }
+
+  return { handleHttp, handleUpgrade, proxyMuxUpgrade, isOwnMuxProxyRequest, publicApi }
 }
