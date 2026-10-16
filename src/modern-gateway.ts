@@ -364,10 +364,15 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
     }
     if (endpoint === '$events/result') {
       const args = remoteArgs(envelope.payload)
-      // Bind approval/event responses to this login token, connection generation and delivered event.
-      allowed = object(args) && [...correlations].some(correlation =>
-        correlation.login === auth.loginKey(req) && correlation.clientId === (args as JsonObject).clientId
-        && correlation.events.has((args as JsonObject).eventId as string))
+      // 原实现把应答绑定到「本登录 + 本连接代数 + 已投递事件」，但 gateUp 现在把 mux 升级直通宿主，
+      // 我们不再观察帧，correlations 恒为空 ⇒ 绑定恒为假 ⇒ 审批/提问应答恒 403，
+      // 客户端把失败当作连接丢失并重投递，形成「点击 → 重连 → 再点击」死循环
+      // （上游 Issue #2，PR #4 by @HeathZero 已合并）。现改为形状校验。
+      // ⚠️ 残余风险：已登录用户可提交任意 $events/result（跨用户应答注入）——根因修复见 Issue #6
+      // （需恢复 mux 帧观察并按属主过滤），已记入 docs/SECURITY.md 与 README 的已知边界。
+      allowed = object(args)
+        && nonempty((args as JsonObject).clientId)
+        && nonempty((args as JsonObject).eventId)
     } else {
       const rule = extension('rpc', endpoint)
       allowed = rule ? await rule.authorize(who, envelope.payload) : await policy.authorize(who, endpoint, envelope.payload)

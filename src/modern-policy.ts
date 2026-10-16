@@ -176,6 +176,13 @@ export function createModernPolicy(owners: OwnershipLookup, options: ModernPolic
     session,
     workspace,
     async authorize(principal, endpoint, payload, stream = false) {
+      // 非标准信封（如 @xmanrui/dsh-im 的 `{method, payload}`）：此前被判为「畸形」而在 **admin 放行之前**
+      // 拒绝，导致其管理页报 management-unreachable（Issue #3，PR #5 by @HeathZero）。
+      // 这里**泛化识别**而不是硬编码某个插件的命名空间：形状完备即按管理员放行，普通用户继续走下面的默认拒绝。
+      if (object(payload) && typeof (payload as JsonObject).method === 'string'
+        && object((payload as JsonObject).payload) && (payload as JsonObject).args === undefined) {
+        return principal.role === 'admin'
+      }
       // Remote 入参有两种线上形态：命名对象（`{args:{...}}`）与位置数组（如 officeToPdf 的
       // `(workspaceFileScopeId, path, priority)`）。数组形态按空对象继续，由对应规则自行读取位置参数；
       // 其它端点拿到空对象后仍会因缺少归属证据而被拒。

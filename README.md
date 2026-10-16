@@ -269,7 +269,7 @@ dsh plugin --profile web remove dsh-ui-auth
 
 ### 已知边界（v0.7.0）
 
-- **mux 逐帧隔离**：0.2.0 的客户端把 `/api/remote.mux`（WebSocket）当作主连接通道，普通用户也需要它，
+- **mux 跨用户事件泄漏（Issue #6，未修复）**：0.2.0 的客户端把 `/api/remote.mux`（WebSocket）当作主连接通道，普通用户也需要它，
   因此网关在校验会话后把升级交给宿主；这条通道上的**逐帧按用户过滤尚未实现**（自研 mux 与 0.2.0 协议不兼容，已停用）。
   其余通道（REST/列表、`/plugins/events`）仍按会话与属主把关。**互不信任的多用户部署请暂勿暴露面板。**
 - **会话 Cookie 按实例唯一**：以 `DSH_HOME` 短哈希为后缀（实例内稳定、实例间互不干扰）。
