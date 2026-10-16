@@ -37,9 +37,25 @@
 
 未配置该 Secret 时，需要发布的运行会**明确失败并提示**，不会静默跳过。
 
-> 也可改用 npm **Trusted Publishing（OIDC）**：在 npmjs.com 为本仓库 + 本 workflow 配置
-> Trusted Publisher 后，删除 `Publish` 步骤的 `NODE_AUTH_TOKEN` 环境变量即可无需任何 secret
-> （workflow 已声明 `id-token: write`）。
+> **推荐：npm Trusted Publishing（OIDC）** —— 无需任何长期 secret。在 npmjs.com 的
+> **Package → Access → Trusted Publishers** 为本仓库添加一条（Provider `GitHub Actions`、
+> Organization `0QwQ0`、Repository `dsh-ui-auth`、Workflow filename **只填 `npm-publish.yml`**、
+> Environment **留空**——本 workflow 未声明 GitHub Environment，填了就不匹配）。
+> workflow 已声明 `id-token: write`，并在发布前安装 `npm@latest`（TP 需要 npm ≥ 11.5.1）。
+>
+> ⚠️ **两个已经踩过的坑**（都表现为发布失败但原因不同）：
+> 1. `actions/setup-node`（带 `registry-url`）会在没有 Secret 时把 `.npmrc` 写成
+>    `_authToken=${NODE_AUTH_TOKEN}`，并把该变量设成**占位值** `XXXXX-XXXXX-XXXXX-XXXXX`。
+>    npm 见到"有 token"就**不会**走 OIDC，PUT 被拒并伪装成
+>    `E404 ... could not be found or you do not have permission`（不是 401，极易误判为包名/权限问题）。
+>    因此 OIDC 步骤里必须显式 `NODE_AUTH_TOKEN: ''`（本仓库已如此）。
+> 2. npm 侧 Trusted Publisher 配置若为 **Pending validation / 已失效**，OIDC 交换不会发生，
+>    报错是 `ENEEDAUTH ... need auth`（看起来像"没登录"，实际是 TP 需要重建）。
+>    新建 TP 后**必须先成功发布一次**才算激活；npm 会给 48 小时验证窗口。
+>
+> 发布成功后可用 registry 的自证接口核对 provenance：
+> `https://registry.npmjs.org/-/npm/v1/attestations/dsh-ui-auth@<version>`
+> 应包含 `https://slsa.dev/provenance/v1`。
 
 ### 手动补发布
 
