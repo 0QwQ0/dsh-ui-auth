@@ -145,8 +145,14 @@ jobs:
 
       # npm publish 会触发 prepack（= npm test）：从 src/*.ts 构建 lib/*.js 并跑完整测试链。
       # 409 表示该版本已在 npm 的**暂存区**（staged publish，需维护者 2FA 批准）：视为已发布，避免每日补发布假失败。
+      # ⚠️ 必须显式清空 NODE_AUTH_TOKEN：`actions/setup-node`（带 registry-url）会在没有 Secret 时
+      # 往 .npmrc 写 `_authToken=${NODE_AUTH_TOKEN}` 并把该变量设成占位值 `XXXXX-XXXXX-XXXXX-XXXXX`。
+      # npm 见到"有 token"就不会去用 Trusted Publishing（OIDC），于是 PUT 被拒——实测报
+      # `E404 ... could not be found or you do not have permission`（不是 401，很容易误判为权限/包名问题）。
       - name: Publish via Trusted Publishing (OIDC)
         if: steps.target.outputs.skip != 'true' && steps.npmcheck.outputs.published == 'false' && steps.auth.outputs.mode == 'oidc'
+        env:
+          NODE_AUTH_TOKEN: ''
         run: |
           set +e
           output=$(npm publish --access public --registry=https://registry.npmjs.org 2>&1); status=$?
