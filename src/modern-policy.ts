@@ -366,17 +366,32 @@ export function createModernPolicy(owners: OwnershipLookup, options: ModernPolic
         // Global registries (commands/change, credentials/reference-updated, llm/adapters-updated,
         // settings/document-updated, cordis/*-resolved, cordis/dynamic-*) carry no owner and are
         // therefore not shown to ordinary users.
-        const args = arrayOf(frame.args) as Array<JsonObject | undefined>
+        const args = arrayOf(frame.args) as Array<unknown>
+        // 会话事件的载荷有两种形态：**id 字符串**（如 api-session/removed）与**摘要对象**
+        // （如 api-session/added 用 summaryFor(session)，字段名可能是 sessionId 或 id）。
+        // 只认一种会让**拥有者本人也收不到**自己的实时会话（实测：谁都收不到）。
+        const argSessionId = (arg: unknown): string | undefined => {
+          if (typeof arg === 'string') return arg
+          if (!object(arg)) return undefined
+          const record = arg as JsonObject
+          if (typeof record.sessionId === 'string') return record.sessionId
+          if (typeof record.id === 'string') return record.id
+          return undefined
+        }
         switch (frame.event) {
-          case 'api-session/added': return session(principal, args[0]?.sessionId) ? value : null
+          case 'api-session/added':
           case 'api-session/activity':
           case 'api-session/error':
           case 'api-session/removed':
-          case 'api-session/status':
-          case 'agent-preset/selected': return session(principal, args[0]) ? value : null
-          case 'goal/activation-changed': return session(principal, args[0]?.sessionId) ? value : null
+          case 'api-session/status': return session(principal, argSessionId(args[0])) ? value : null
+          case 'agent-preset/selected': return session(principal, args[0] as string) ? value : null
+          case 'goal/activation-changed': return session(principal, argSessionId(args[0])) ? value : null
           case 'cordis/request-run':
-          case 'cordis/inspect-query': return session(principal, args[0]?.agentId) ? value : null
+          case 'cordis/inspect-query': {
+            const first = args[0]
+            const agentId = object(first) && typeof (first as JsonObject).agentId === 'string' ? (first as JsonObject).agentId as string : undefined
+            return session(principal, agentId) ? value : null
+          }
           default: return null
         }
       }
