@@ -569,7 +569,11 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
             const endpoint = frame.endpoint
             let granted = false
             try {
-              granted = await policy.authorize(info.who, endpoint, frame.payload, true)
+              // 部署方可用 `uiAuth.registerPolicy({stream})` 覆盖内置判定（与原自研 mux 路径的语义一致）。
+              const rule = extension('stream', endpoint)
+              granted = rule
+                ? await rule.authorize(info.who, frame.payload)
+                : await policy.authorize(info.who, endpoint, frame.payload, true)
             } catch (error) {
               console.error('[dsh-ui-auth] 流授权判定异常（endpoint=' + endpoint + '）：' + errorMessage(error))
             }
@@ -600,7 +604,13 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
       upstream.on('open', () => {
         for (const item of pendingUplink.splice(0)) submitUplink(item.data, item.isBinary)
       })
-      upstream.on('message', (data: WebSocket.RawData, isBinary: boolean) => {
+      let downQueue: Promise<void> = Promise.resolve()
+      /**
+       * 下行帧（宿主 → 客户端）。逐帧裁决走**策略层** `frame()`（唯一事实来源：会话/工作区/事件归属
+       * 与投影都在那里，且有单测）；若部署方登记了 `uiAuth.registerPolicy({stream})`，则**由它接管**
+       * （与原自研 mux 路径一致）。`project` 可能是异步的，因此整条下行链按序串行，避免帧乱序。
+       */
+      const deliverDown = async (data: WebSocket.RawData, isBinary: boolean): Promise<void> => {
         if (isBinary) { try { client.send(data, { binary: true }) } catch (error) { /* ignore */ } ; return }
         const raw = data.toString()
         const frame = parseFrame(raw)
@@ -617,8 +627,8 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
         const value: unknown = wrapped ? frame.value : frame
         let output: unknown
         try {
-          // 逐帧裁决复用**策略层**的 `frame()`（唯一事实来源：会话/工作区/事件归属与投影都在那里，且有单测）。
-          output = policy.frame(info.who, endpoint, value, correlation)
+          const rule = extension('stream', endpoint)
+          output = rule ? await rule.project(info.who, value) : policy.frame(info.who, endpoint, value, correlation)
         } catch (error) {
           console.error('[dsh-ui-auth] 帧策略异常（endpoint=' + endpoint + '）：' + errorMessage(error))
           return
@@ -636,6 +646,11 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
           : JSON.stringify(wrapped ? { ...frame, value: output } : output)
         if (text !== raw) debugStream(`改写帧 who=${info.who.username}/${info.who.role} endpoint=${endpoint} 原=${raw.slice(0, 140)} 改=${text.slice(0, 140)}`)
         try { client.send(text) } catch (error) { /* ignore */ }
+      }
+      upstream.on('message', (data: WebSocket.RawData, isBinary: boolean) => {
+        downQueue = downQueue
+          .then(() => deliverDown(data, isBinary))
+          .catch((error) => { console.error('[dsh-ui-auth] 下行帧处理异常: ' + errorMessage(error)) })
       })
       client.on('message', (data: WebSocket.RawData, isBinary: boolean) => {
         submitUplink(data, isBinary)

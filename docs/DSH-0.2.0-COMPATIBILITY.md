@@ -54,6 +54,63 @@
 `settings/mutate`、`credentials/*` 直连、`llm/discoverModels` 直连、`session/initializeDefaultModel`、
 `productAnalytics/*`、`dynamicCordisRunner/*`、`workspace/create`、`commands/execute` 等。
 
+### 4.1 自带 HTTP 载体的第三方插件（非标准信封）
+
+部分插件注册自己的 HTTP 载体，并且**不使用** DSH 标准的 `{args:{...}}` 信封，例如
+`@xmanrui/dsh-im` 用 `{method, payload}`（其 `connection.rpc.call('/api', channel, {method, payload})`）。
+这类请求此前会被判为「畸形」而被拒——而且形状检查跑在管理员放行**之前**，所以**连管理员也被拒**
+（表现为 IM 设置页 `management-unreachable`，且因走 mux stream 线而没有 httpStatus）。
+见 [Issue #3](https://github.com/0QwQ0/dsh-ui-auth/issues/3)（报告与初版补丁 by @HeathZero）。
+
+**内置规则（v0.7.1+）**：形状完备的非标准信封——`{method: string, payload: object}` 且**没有 `args` 键**——
+不再被视为畸形，**仅对管理员放行**（HTTP 线与 mux stream 线共用同一入口）；普通用户维持默认拒绝；
+缺少 `method`/`payload` 或类型不符仍然 fail-closed。实现与回归见
+`src/modern-policy.ts`（`authorize()` 入口）与 `test/modern-policy.test.mjs`、
+`test/security-suite.mjs`（`AUTHZ` 分类）。
+
+**其他自定义形状 / 需要给普通用户开的口子**：用 `uiAuth.registerPolicy()` 逐条登记（命中歧义时 fail-closed）。
+宿主插件里可以这样写（示例覆盖五个 section；`matches` 决定"这条规则管不管这个请求"）：
+
+```js
+// 在某个宿主插件里（apply(ctx) 内）
+const auth = ctx.get('uiAuth')
+ctx.effect(() => auth.registerPolicy('my-plugin-carrier', {
+  // 自带 HTTP 载体的自定义信封：只认自己那条路径
+  http: {
+    matches: (target) => target.pathname.startsWith('/api/my-plugin/'),
+    authorize: (principal, request) => principal.role === 'admin',
+  },
+  // 普通请求/响应（unary）：matches 拿到的是端点名，如 'my-plugin/status'
+  rpc: {
+    matches: (endpoint) => endpoint.startsWith('my-plugin/'),
+    authorize: (principal, payload) => principal.role === 'admin',
+    project: (principal, value) => value,     // 可在此裁剪响应字段
+  },
+  // 只做鉴权、不裁剪响应的 unary 规则
+  remote: {
+    matches: (endpoint) => endpoint === 'my-plugin/ping',
+    authorize: (principal) => principal.role !== undefined,
+  },
+  // 流式端点（/api/remote.mux 的 open 与逐帧都会经过这里）
+  stream: {
+    matches: (endpoint) => endpoint === 'my-plugin/events',
+    authorize: (principal, payload) => principal.role === 'admin',
+    project: (principal, value) => value,
+  },
+  // 其他 WebSocket 升级路径（默认仅管理员）
+  upgrade: {
+    matches: (target) => target.pathname.startsWith('/api/my-plugin/socket'),
+    authorize: (principal) => principal.role === 'admin',
+  },
+}))
+```
+
+⚠️ 三点必须记住：① 同一 `kind`（如两个 `rpc` 规则）**同时命中**会抛错并 fail-closed，`matches` 要写窄；
+② 规则一旦命中，**内置的归属裁剪就不再参与**（`rpc` 走你的 `project` 而不是 `policy.result()`，
+`stream` 走你的 `project` 而不是 `policy.frame()`）——所以 `project` 必须自己按归属裁剪，
+写成 `v => v` 等于把他人数据原样放行，流式场景尤其危险；
+③ 这条登记**不会**放宽本插件的默认拒绝表，只是在它之外加白名单。
+
 **模型与密钥的按用户隔离**：每用户拥有自己的 provider/模型/API Key；
 私有配置用**口令派生 KEK + 每配置 DEK**（AES-256-GCM，AAD 绑定 `uid/profileId`）加密，**宿主明文存储中永不出现**；
 管理员可把自己的模型分享给指定用户（被授权者可用、**看不到 Key**、**可看余额**），

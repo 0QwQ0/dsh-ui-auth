@@ -268,3 +268,34 @@ test('R2: a per-user entitlement trims the catalog and gates model selection', a
   assert.deepEqual(await restricted.result(alice, 'session/modelCatalog', { groups: 'unknown-shape' }), { groups: 'unknown-shape' })
   assert.deepEqual(await policy.result(alice, 'session/modelCatalog', catalog), catalog, '未配置授权时不裁剪')
 })
+
+// Issue #3（@HeathZero 报告，PR #5）：自带 HTTP 载体的第三方插件（如 @xmanrui/dsh-im）用
+// `{method, payload}` 而不是标准 `{args}` 信封。此前形状检查在 **admin 放行之前** 执行，
+// 因此连管理员也被判为「畸形」而拒绝（IM 设置页 management-unreachable）。
+// 现在的规则：形状完备的非标信封按**管理员**放行，普通用户维持默认拒绝，且不限于某个命名空间。
+test('non-standard management envelopes are admin-only, and malformed ones stay denied (issue #3)', async () => {
+  const root = { username: 'root', role: 'admin' }
+  const envelope = { method: 'connection.status', payload: {} }
+
+  // 管理员：HTTP 线（unary）与 mux stream 线共用同一入口，两条都必须放行
+  assert.equal(await policy.authorize(root, 'dsh-im/feishu', envelope), true, 'HTTP 线放行')
+  assert.equal(await policy.authorize(root, 'dsh-im/feishu', envelope, true), true, 'stream 线放行')
+
+  // 普通用户：默认拒绝不变（IM 机器人管理是部署者能力）
+  assert.equal(await policy.authorize(alice, 'dsh-im/feishu', envelope), false)
+  assert.equal(await policy.authorize(alice, 'dsh-im/feishu', envelope, true), false)
+
+  // 形状不完备 = 畸形：管理员也拒绝（fail-closed 不能被"非标"绕过）
+  assert.equal(await policy.authorize(root, 'dsh-im/feishu', { method: 'connection.status' }), false, '缺 payload 对象')
+  assert.equal(await policy.authorize(root, 'dsh-im/feishu', { payload: {} }), false, '缺 method')
+  assert.equal(await policy.authorize(root, 'dsh-im/feishu', { method: 1, payload: {} }), false, 'method 非字符串')
+
+  // 泛化：不硬编码 dsh-im 命名空间，其他插件的非标管理端点同样适用
+  assert.equal(await policy.authorize(root, 'other-plugin/manage', envelope), true)
+  assert.equal(await policy.authorize(alice, 'other-plugin/manage', envelope), false)
+
+  // 既有行为不回归：标准信封仍按原规则（读端点放行、未登记端点拒绝）
+  assert.equal(await policy.authorize(root, 'session/list', { args: {} }), true)
+  assert.equal(await policy.authorize(alice, 'session/list', { args: {} }), true)
+  assert.equal(await policy.authorize(alice, 'unreviewed/endpoint', { args: {} }), false)
+})

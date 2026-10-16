@@ -702,6 +702,32 @@ check('INFO', '网关异常时返回通用 500（不泄露堆栈）', HOST_SRC.i
   check('AUTHZ', '水平越权：普通用户读他人会话 → 403', r.status === 403)
 }
 {
+  // Issue #3 行为回归（报告者 @HeathZero，PR #5）：自带 HTTP 载体的第三方插件用
+  // `{method, payload}` 而非标准 `{args}`。此前形状检查跑在 admin 放行**之前**，
+  // 于是连管理员也被拒（IM 设置页 management-unreachable）。现在：形状完备则仅管理员放行。
+  const envelope = (rpcId) => JSON.stringify({
+    type: 'client-request', rpcId, method: 'dsh-im/feishu',
+    payload: { method: 'connection.status', payload: {} },
+  })
+  const adminReq = makeRes()
+  server.emit('request', makeReq('POST', '/api/dsh-im/feishu', adminCookie, envelope('issue3-admin')), adminReq)
+  await settle()
+  check('AUTHZ', '管理员 + 非标管理信封（dsh-im）不再被拒（Issue #3）', adminReq.status !== 403, 'status=' + adminReq.status)
+
+  const userReq = makeRes()
+  server.emit('request', makeReq('POST', '/api/dsh-im/feishu', test1Cookie, envelope('issue3-user')), userReq)
+  await settle()
+  check('AUTHZ', '普通用户 + 非标管理信封仍 → 403（默认拒绝不变）', userReq.status === 403, 'status=' + userReq.status)
+
+  const malformed = makeRes()
+  server.emit('request', makeReq('POST', '/api/dsh-im/feishu', adminCookie, JSON.stringify({
+    type: 'client-request', rpcId: 'issue3-malformed', method: 'dsh-im/feishu',
+    payload: { method: 'connection.status' },
+  })), malformed)
+  await settle()
+  check('AUTHZ', '畸形非标信封（缺 payload 对象）管理员也 → 403', malformed.status === 403, 'status=' + malformed.status)
+}
+{
   const r = makeRes()
   server.emit('request', makeReq('GET', '/api/session.export?sessionId=s-admin', test1Cookie, undefined), r)
   await settle()
@@ -936,6 +962,17 @@ check('DEPLOY', '登录失败锁定按源 IP（反向代理下聚合，README �
     index.includes('modern.handleUpgrade(') && index.includes('DSH_AUTH_MUX_PROXY'))
   check('WS-ISO', '自研 mux 死代码已移除（不再经 typertGateway.wireStream 自建流）',
     !gateway.includes('wireStream') && !gateway.includes('MAX_STREAMS'))
+  // 公开 seam 的"孤儿化"回归：`uiAuth.registerPolicy()` 的五个 section 必须都有查询点。
+  // 本仓库真的踩过：删除自研 mux 时 `stream` 规则的唯一调用点随之消失，部署方登记的
+  // stream 放行/裁剪会**静默失效**（`http`/`rpc`/`remote`/`upgrade` 不受影响，所以很难发现）。
+  check('WS-ISO', 'PolicyRules 的五个 section 都有查询点（http/rpc/remote/stream/upgrade）',
+    gateway.includes("extension('http'") && gateway.includes("extension('rpc'")
+    && gateway.includes('rules.remote') && gateway.includes("extension('stream'")
+    && gateway.includes("extension('upgrade'"),
+    ['http', 'rpc', 'remote', 'stream', 'upgrade'].filter((kind) => {
+      if (kind === 'remote') return !gateway.includes('rules.remote')
+      return !gateway.includes(`extension('${kind}'`)
+    }).join(',') || 'all present')
 }
 {
   // `$events/result`（审批/提问应答）必须**证明本登录确实被投递过该事件**。

@@ -9,7 +9,7 @@
 > 登录用户访问页面、API 与 WebSocket，并实施管理员/普通用户两级权限与数据隔离
 > （REST/列表接口 + WebSocket 事件流均按用户隔离），邀请码注册、TOTP 两步验证与
 > 通行密钥（Passkey）登录。
-> 验证方法：`test/security-suite.mjs`（164 项自动化断言，驱动真实网关代码路径，
+> 验证方法：`test/security-suite.mjs`（168 项自动化断言，驱动真实网关代码路径，
 > mock 服务器 + mock 凭据存储）＋ 静态源码检查 ＋ host-smoke（会话持久化/审计/
 > 注册/TOTP/通行密钥管理面场景）＋ 全量回归（crypto 向量 / RFC 6238 TOTP 向量 /
 > 客户端冒烟 / 登录页与端点联通 / 主机冒烟）＋ 浏览器级端到端（真实 Chrome +
@@ -32,11 +32,11 @@ API Key（仅管理员）；③ 会话/工作区数据按用户隔离；④ 凭�
 
 ---
 
-## 2. 测试矩阵与结果（164/164 通过）
+## 2. 测试矩阵与结果（168/168 通过）
 
 > 本节由 `npm run docs:matrix` 生成（内部：套件导出 `DSH_SUITE_JSON` → 本脚本重建），**以 JSON 结果为准**，
 > 不解析 stdout —— 逐项 dump 会混入插件日志，统计不可靠（曾因此得到错误总数与假 FAIL）。
-> 共 164 项，覆盖 17 个分类。
+> 共 168 项，覆盖 17 个分类。
 ### AUTH 路 AUTH（9 项，9/9 通过）
 
 | 用例 | 结果 |
@@ -186,7 +186,7 @@ API Key（仅管理员）；③ 会话/工作区数据按用户隔离；④ 凭�
 | 认证页面/接口 no-store（防缓存泄露） | PASS |
 | 网关异常时返回通用 500（不泄露堆栈） | PASS |
 
-### AUTHZ 路 AUTHZ（15 项，15/15 通过）
+### AUTHZ 路 AUTHZ（18 项，18/18 通过）
 
 | 用例 | 结果 |
 |---|---|
@@ -204,6 +204,9 @@ API Key（仅管理员）；③ 会话/工作区数据按用户隔离；④ 凭�
 | 普通用户模型/Key 写操作 → 403 (/api/credentials.unset) | PASS |
 | 普通用户模型/Key 写操作 → 403 (/api/llm.discoverModels) | PASS |
 | 水平越权：普通用户读他人会话 → 403 | PASS |
+| 管理员 + 非标管理信封（dsh-im）不再被拒（Issue #3） | PASS |
+| 普通用户 + 非标管理信封仍 → 403（默认拒绝不变） | PASS |
+| 畸形非标信封（缺 payload 对象）管理员也 → 403 | PASS |
 | 水平越权：普通用户导出他人会话 → 403 | PASS |
 
 ### AVAIL 路 AVAIL（3 项，3/3 通过）
@@ -262,7 +265,7 @@ API Key（仅管理员）；③ 会话/工作区数据按用户隔离；④ 凭�
 | Accept-Language: en 不改变鉴权结果（仍 401） | PASS |
 | 登录页（英文）不泄露密钥材料或存储键 | PASS |
 
-### WS-ISO 路 WebSocket 逐帧归属隔离（Issue #6）（19 项，19/19 通过）
+### WS-ISO 路 WebSocket 逐帧归属隔离（Issue #6）（20 项，20/20 通过）
 
 | 用例 | 结果 |
 |---|---|
@@ -283,6 +286,7 @@ API Key（仅管理员）；③ 会话/工作区数据按用户隔离；④ 凭�
 | 被隐藏的 waterfall 接收方仍会释放投递（否则属主的 next 挂住） | PASS |
 | 升级入口唯一：闸门把升级交给 handleUpgrade（含 mux 代理与策略） | PASS |
 | 自研 mux 死代码已移除（不再经 typertGateway.wireStream 自建流） | PASS |
+| PolicyRules 的五个 section 都有查询点（http/rpc/remote/stream/upgrade） | PASS |
 | $events/result 不接受未被投递过的事件（无形状退档） | PASS |
 | 退档形状校验已从源码移除 | PASS |
 
@@ -321,7 +325,7 @@ API Key（仅管理员）；③ 会话/工作区数据按用户隔离；④ 凭�
 
 | OWASP 2021 | 对应用例 | 覆盖 |
 |---|---|---|
-| A01 失效的访问控制 | AUTHZ（15）+ WS-ISO（19）+ 管理员 API 守卫 + 会话/工作区属主隔离（SESSION 15 项） | ✅ 完整 |
+| A01 失效的访问控制 | AUTHZ（18）+ WS-ISO（20）+ 管理员 API 守卫 + 会话/工作区属主隔离（SESSION 15 项） | ✅ 完整 |
 | A02 加密失败 | PBKDF2 60k 轮 + 随机盐 + 常量时间比较、无明文存储、`no-store`；TOTP（RFC 6238 向量）；通行密钥：只存公钥、挑战一次性、严格校验来源与 RP ID、签名计数器回退拒绝 | ✅ 完整 |
 | A03 注入 | XSS（静态）、CRLF、开放重定向、请求体上限、JSON 解析防护 | ✅ 完整 |
 | A04 不安全设计 | 会话固定防护、fail-closed、按源 IP 锁定、方法白名单、邀请码防枚举（无效/耗尽同 403）；通行密钥：改动登录因子必须二次验证、一次性票据、账号因子不变量（防锁死） | ✅ 完整 |
@@ -364,7 +368,7 @@ WS 事件流深层协议攻击面（事件内容已按用户逐帧隔离，但�
 ## 6. 复现
 
 ```bash
-# 安全套件（164 项；加 DSH_SUITE_VERBOSE=1 会额外打印逐项明细，即 §2 的表格内容）
+# 安全套件（168 项；加 DSH_SUITE_VERBOSE=1 会额外打印逐项明细，即 §2 的表格内容）
 node test/security-suite.mjs                        # Windows: $env:DSH_SUITE_VERBOSE='1'
 
 # 全量回归（构建 + 语法检查 + crypto/TOTP 向量 + 客户端冒烟 + 主机冒烟 + 登录页/端点 + 安全套件 + 策略回归）

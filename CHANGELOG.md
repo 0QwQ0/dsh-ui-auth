@@ -2,6 +2,22 @@
 
 > **面向：**所有用户（升级前必读）。
 
+## 未发布（`main`）— Issue #3 回归补齐 + `registerPolicy` seam 修复
+
+0.7.1 发布后补的三件事（**均已提交在 `main`，尚未发版**）：
+
+1. **Issue #3 的回归缺口**：0.7.1 里那处「非标准管理信封按管理员放行」的修复**当时没有任何测试**。
+   现补上：`test/modern-policy.test.mjs` 覆盖管理员两条线放行 / 普通用户拒绝 / 畸形信封 fail-closed /
+   泛化到非 `dsh-im` 命名空间 / 标准信封不回归；`test/security-suite.mjs` 的 `AUTHZ` 再加 3 条**行为用例**
+   （真实网关 + 真实宿主转发：管理员不再 403、普通用户 403、畸形 403）。合计 **168/168**。
+2. **`PolicyRules` 的 `stream` section 曾被孤儿化**：删除自研 mux 时，`stream` 规则的唯一调用点随之消失
+   （`http`/`rpc`/`remote`/`upgrade` 仍在），于是部署方用 `uiAuth.registerPolicy({stream})` 登记的
+   放行与逐帧投影会**静默失效**。现已接回透明代理的两个方向（打开授权 + 逐帧投影；规则命中即接管内置判定），
+   并加契约断言"五个 section 都有查询点"——这类「seam 变孤儿」的坑本仓库已经踩过两次。
+3. **文档**：`docs/DSH-0.2.0-COMPATIBILITY.md` 新增 §4.1，说明自带 HTTP 载体的第三方插件
+   （非标准 `{method, payload}` 信封）现在如何被内置规则放行，并给出 `uiAuth.registerPolicy()` 的
+   完整示例（五个 section）与两条必须注意的语义（规则命中即接管内置裁剪；`matches` 写窄以免歧义 fail-closed）。
+
 ## 0.7.1 — 修复 mux 跨用户泄漏（Issue #6）与两项实测缺陷
 
 **安全修复（重要：0.7.0 请尽快升级）**
