@@ -142,6 +142,11 @@ DSH_SUITE_VERBOSE=1 node test/security-suite.mjs
 # 5) mux 跨用户泄漏的双身份真实浏览器 A/B（Issue #6）
 #    NO-LEAK → 退出 0；LEAK → 退出 1；VOID（无阳性对照）→ 退出 1
 PROBE_URL=http://127.0.0.1:3205 npm run test:mux:leak
+
+# 6) Issue #3：自带 HTTP 载体的第三方插件（非标准 {method, payload} 信封）端到端复验
+#    需目标实例已安装 @xmanrui/dsh-im@4.38.x；管理员应 200（响应来自 dsh-im 处理器）、普通用户 403、
+#    不存在的 dsh-im 路径 404；未装该插件时报 INCONCLUSIVE 而非假通过
+PROBE_URL=http://127.0.0.1:3207 npm run test:issue3:live
 ```
 
 要点自查（人工）：未登录 → `/` 是否 302 到登录页；`/api/*` 是否 401；

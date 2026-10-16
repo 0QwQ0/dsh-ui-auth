@@ -117,6 +117,19 @@ ctx.effect(() => auth.registerPolicy('my-plugin-carrier', {
 打开授权与逐帧投影都会先查 `stream` 规则），但**尚未发版**；在那之前请勿依赖 `stream` 登记，
 流式端点的归属过滤由本插件内置策略承担。
 
+**#3 的端到端复验（2026-10-16，报告者环境）**：在真实 DSH `0.2.0-rc.2` + 真实
+`@xmanrui/dsh-im@4.38.2`（报告者所用版本）上，对他给出的**原始复现请求**做 A/B，
+只切换被测插件版本（其余不变）：
+
+| 被测版本 | 管理员 + 非标信封 | 普通用户 + 同一请求 | 不存在的 `dsh-im/*` 路径 |
+|---|---|---|---|
+| `0.7.0`（报告时） | **403** `Access denied`（复现其 bug） | 403 | 403（连不存在路径也 403 = 形状检查前置的直接证据） |
+| `main`（修复版） | **200**，响应来自 dsh-im 处理器（`bot.name=飞书机器人`、`health.status=offline`、`state=disconnected`） | 403 | **404**（差分对照：不是无差别放行 `dsh-im/*`） |
+
+复跑命令：`PROBE_URL=http://127.0.0.1:<port> npm run test:issue3:live`
+（目标实例需装 `@xmanrui/dsh-im@4.38.x`，否则脚本报 INCONCLUSIVE 而不是假通过）。
+
+
 **模型与密钥的按用户隔离**：每用户拥有自己的 provider/模型/API Key；
 私有配置用**口令派生 KEK + 每配置 DEK**（AES-256-GCM，AAD 绑定 `uid/profileId`）加密，**宿主明文存储中永不出现**；
 管理员可把自己的模型分享给指定用户（被授权者可用、**看不到 Key**、**可看余额**），

@@ -36,7 +36,8 @@
     "test:compat:0.2.0": "node test/live-020-check.mjs",
     "test:compat:matrix": "node test/live-compat-matrix.mjs",
     "test:i18n:live": "node test/live-i18n-check.mjs",
-    "test:mux:leak": "node test/live-mux-leak.mjs"
+    "test:mux:leak": "node test/live-mux-leak.mjs",
+    "test:issue3:live": "node test/live-im-envelope-check.mjs"
   },
   "dsh": {
     "bundle": {

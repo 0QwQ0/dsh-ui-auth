@@ -11,6 +11,11 @@ npm `latest` 仍是 0.7.1，下表第 2 条的运行时代价请按"已修复但
    现补上：`test/modern-policy.test.mjs` 覆盖管理员两条线放行 / 普通用户拒绝 / 畸形信封 fail-closed /
    泛化到非 `dsh-im` 命名空间 / 标准信封不回归；`test/security-suite.mjs` 的 `AUTHZ` 再加 3 条**行为用例**
    （真实网关 + 真实宿主转发：管理员不再 403、普通用户 403、畸形 403）。合计 **168/168**。
+   **并在报告者的复现环境里端到端复验**：真实 DSH `0.2.0-rc.2` + 真实 `@xmanrui/dsh-im@4.38.2`，
+   用他给出的原始复现请求做 A/B（只换被测插件版本）：`0.7.0` 下管理员 **403**（复现 bug），
+   `main` 下管理员 **200** 且响应来自 dsh-im 自己的处理器（`飞书机器人` / `connection.status`），
+   普通用户仍 403、不存在的 `dsh-im/*` 路径 404（差分对照）。已固化为 `npm run test:issue3:live`
+   （该脚本在 0.7.0 上 FAIL、在修复版上 PASS，具备鉴别力）。
 2. **`PolicyRules` 的 `stream` section 曾被孤儿化**：删除自研 mux 时，`stream` 规则的唯一调用点随之消失
    （`http`/`rpc`/`remote`/`upgrade` 仍在），于是部署方用 `uiAuth.registerPolicy({stream})` 登记的
    放行与逐帧投影会**静默失效**——**0.7.0 与 0.7.1 都是如此**，因此在下一个发行版发布前**请勿依赖 `stream` 登记**。
