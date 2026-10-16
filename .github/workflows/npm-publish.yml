@@ -227,9 +227,13 @@ jobs:
         run: |
           set -euo pipefail
           name="dsh-ui-auth-${{ steps.target.outputs.version }}.tgz"
-          if gh release view "${{ steps.target.outputs.tag }}" --json assets -q '.assets[].name' | grep -Fxq "$name"; then
+          # 两个名字都要在：带版本号的那份（按 tag 钉住的合法写法）与版本无关别名
+          # （`/releases/latest/download/dsh-ui-auth.tgz`，目录站的链接靠它不变质）。
+          # 只看前者会让"别名缺失"的发布永远补不上——v0.7.1 就正是这种状态。
+          assets=$(gh release view "${{ steps.target.outputs.tag }}" --json assets -q '.assets[].name')
+          if echo "$assets" | grep -Fxq "$name" && echo "$assets" | grep -Fxq 'dsh-ui-auth.tgz'; then
             echo "present=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::$name 已存在，无需重复上传"
+            echo "::notice::$name 与 dsh-ui-auth.tgz 均已存在，无需重复上传"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
@@ -251,3 +255,10 @@ jobs:
           ls -l "dsh-ui-auth-${manifest}.tgz"
           gh release upload "${{ steps.target.outputs.tag }}" "dsh-ui-auth-${manifest}.tgz" --clobber
           echo "::notice::已把 dsh-ui-auth-${manifest}.tgz 挂到 ${{ steps.target.outputs.tag }}"
+          # 再挂一份**版本无关**的名字：插件目录（awesome-dsh-plugin）的 `tarball` 字段在
+          # `/releases/latest/download/` 下按**字面**取文件名——资产名带版本号的链接在下次发版
+          # 就会 404（该目录的 probe-tarballs.mjs 把这条列为"会烂掉的 tarball"）。
+          # 因此 `dsh-ui-auth.tgz` 这个别名必须跟着每次发布走；带版本号的那份保留（它按 tag 钉住是合法写法）。
+          cp "dsh-ui-auth-${manifest}.tgz" dsh-ui-auth.tgz
+          gh release upload "${{ steps.target.outputs.tag }}" dsh-ui-auth.tgz --clobber
+          echo "::notice::已把版本无关别名 dsh-ui-auth.tgz 挂到 ${{ steps.target.outputs.tag }}（供 awesome-dsh-plugin 的 latest/download 链接使用）"
