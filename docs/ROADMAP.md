@@ -37,11 +37,16 @@
 | Issue #6 上行：`open` 先授权 | ✅ | `42fb0f6` | 宿主按单用户语义会服务任何 `sessionId`；未授权 `open` 不转发 |
 | 自研 mux 死代码删除 + 升级入口收敛 | ✅ | `42fb0f6` | `wireStream`/`MAX_STREAMS`/`StreamWork`/`sockets` 全删；其他升级路径重新纳入 `upgrade` 策略 |
 | `$events/result` 退档删除（应答注入面） | ✅ | `bb87ce0` | 必须能证明"本登录被投递过该 eventId"，否则 403；`WS-ISO` 行为回归 |
-| 安全套件分类汇总位置错误 | ✅ | `495cbb1` | 汇总移到全部用例之后，未登记分类也进表（现 **164/164、17 分类**） |
+| 安全套件分类汇总位置错误 | ✅ | `495cbb1` | 汇总移到全部用例之后，未登记分类也进表（现 **168/168、17 分类**） |
 | 发布链路修复 + 发版 | ✅ | `c0487a5` | 清空 OIDC 步骤的 `NODE_AUTH_TOKEN`（`setup-node` 占位值会覆盖 Trusted Publishing）；重建 TP 后 **0.7.1 已发布**（SLSA v1 provenance）；Issue #6 已回帖并关闭 |
+| Issue #3 回归补齐 + 文档示例 | ✅（未发版） | `9ad7ea7` | 非标信封单元/行为用例（`AUTHZ` 18、`WS-ISO` 20）+ 兼容性文档 §4.1 的 `registerPolicy()` 示例；#3 已回帖 |
+| `registerPolicy({stream})` 孤儿化修复 | ✅（**未发版**） | `9ad7ea7` | 0.7.0/0.7.1 上 `stream` 规则无调用点（静默失效）；现已接回代理的两个方向 + 五 section 契约回归。**运维含义：0.7.1 上请勿依赖 `stream` 登记**，已在 README/兼容性文档标注为已知限制 |
+
+> **未发版状态（截至本行）**：`main` 上 `9ad7ea7` 及之后的改动**尚未进入任何发行版**（npm `latest` 仍是 0.7.1）；
+> 所有者决定**暂不发布下一版**，因此 `stream` 登记的失效属于"已修复但未生效"，请按上表备注对待。
 
 **接续约定**：每个增量都必须 `tsc` + `build` + `npm test` 全绿后提交；`main` 只在全部完成且所有者确认发版后才合并。
-`npm test` 当前包含：security-suite **164/164**（含 `WS-ISO` 19 项）、host-smoke、login-page-check、modern-policy、profile-crypto、profile-envelope、profile-service、user-routes、profile-keys、i18n。
+`npm test` 当前包含：security-suite **168/168**（含 `WS-ISO` 20 项、`AUTHZ` 18 项）、host-smoke、login-page-check、modern-policy、profile-crypto、profile-envelope、profile-service、user-routes、profile-keys、i18n。
 > 目标宿主：**DSH `0.2.0-rc.2`**（npm `latest`，rc 预发布——该仓库一贯以 rc 作为 latest）。
 > 破坏性变更：① 完全移除 legacy 传输线；② 模型 / API Key 改为**按用户隔离 + 管理员分享**；③ 兼容声明与页面权限重划。
 

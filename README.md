@@ -269,6 +269,13 @@ dsh plugin --profile web remove dsh-ui-auth
 
 ### 已知边界（v0.7.1）
 
+- **`uiAuth.registerPolicy({stream})` 在 0.7.1 及更早版本不生效（已在 `main` 修复，下一个发行版生效）**：
+  自 0.7.0 起 `handleUpgrade` 一直不可达，v0.7.1 删除自研 mux 后 `stream` 规则的唯一调用点也彻底消失——
+  因此**部署方为流式端点登记的放行与逐帧裁剪会被静默忽略**（`http`/`rpc`/`remote`/`upgrade` 四个 section 不受影响，
+  这也是它难以被发现的原因）。`main` 上已把 `stream` 规则接回透明代理的两个方向（打开授权 + 逐帧投影），
+  并加了「五个 section 都必须有查询点」的契约回归；**在下一个发行版发布前，请勿依赖 `stream` 登记**——
+  流式端点的归属过滤由本插件内置策略负责（会话/工作区/事件归属，见下）。
+
 - **mux 跨用户泄漏（Issue #6，已修复）**：网关现在代理 `/api/remote.mux` 升级，并在**两个方向**都按登录归属把关：
   - **下行（宿主 → 客户端）**：逐帧复用策略层 `policy.frame()`——他人的 `baseline.items`/`upsert.workspace` 丢弃、
     `order.workspaceIds` 与 `archivedSessionIds` 裁剪、`session/control` 基线按属主投影、`api-session/*` 等事件按会话归属、

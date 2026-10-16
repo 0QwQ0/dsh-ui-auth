@@ -121,6 +121,7 @@
 | mux 把**全部**工作区/会话推给每个连接 | 普通用户实时看到管理员的工作区与会话（Issue #6 的下行半边） | 代理 + 逐帧 `policy.frame()` + `WS-ISO` 回归 + `test:mux:leak` |
 | 宿主按任何 `sessionId` 服务 mux 流 | 普通用户可直接订阅他人会话的流（#6 的上行半边，实测直通时 open 到达宿主） | 每个 `open` 先 `policy.authorize(..., true)`，未授权不转发；`WS-ISO` + `test:mux:leak` |
 | 自研 mux（`wireStream` 自建流）与 0.2.0 协议不兼容 | 设置页无限「重新连接中」；且该实现成为死代码与崩溃面 | 升级入口收敛为 `handleUpgrade`，自研 mux 代码已删除 |
+| **`registerPolicy({stream})` 的调用点随自研 mux 一起消失（孤儿化）** | 部署方为**流式端点**登记的放行与逐帧裁剪被**静默忽略**（0.7.0/0.7.1 均如此；`http`/`rpc`/`remote`/`upgrade` 不受影响，故极难发现） | `main` 已把 `stream` 规则接回透明代理的打开授权与逐帧投影，并加契约回归「五个 section 都必须有查询点」；**已在 README 与兼容性文档标注为 0.7.1 的已知限制，待下个发行版生效** |
 | 会话 Cookie 名固定 | 同机多实例**互相踢下线** | 名字按 `DSH_HOME` 唯一化 |
 
 ## 8. 审计清单（可直接执行）
