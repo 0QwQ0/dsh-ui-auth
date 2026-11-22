@@ -40,6 +40,16 @@ interface NativeConnection {
   createSharedFetchHandler(prefix: string): { fetch(request: Request): Promise<Response> }
 }
 
+/** Host web server seam (`ctx.get('webServer')`, DSH 0.2.x): the actual listener facts. */
+interface HostWebServer {
+  readonly host?: string
+  readonly port?: number
+  readonly protocol?: 'http:' | 'https:'
+}
+
+/** Upgrade sockets are `net.Socket`s at runtime; `Duplex` does not expose the local tuple. */
+type UpgradedSocket = Duplex & { readonly localAddress?: string; readonly localPort?: number }
+
 /** The plugin-side facts the gateway needs (implemented in `index.ts`). */
 export interface ModernAuth {
   ready: Promise<unknown>
@@ -531,9 +541,16 @@ export function createModernGateway(ctx: ModernGatewayContext, auth: ModernAuth)
       correlations.add(correlation)
       let upstream: WebSocket
       try {
-        upstream = new WebSocket(`ws://${info.host}/api/remote.mux`, {
+        const webServer = ctx.get('webServer') as HostWebServer | undefined
+        const listener = socket as UpgradedSocket
+        const address = listener.localAddress ?? webServer?.host ?? '127.0.0.1'
+        const port = listener.localPort ?? webServer?.port
+        if (port === undefined) throw new Error('mux upstream: listener port unavailable')
+        const authority = address.includes(':') ? `[${address}]:${port}` : `${address}:${port}`
+        const scheme = webServer?.protocol === 'https:' ? 'wss' : 'ws'
+        upstream = new WebSocket(`${scheme}://${authority}/api/remote.mux`, {
           maxPayload: MAX_BODY,
-          headers: { ...(info.cookie === undefined ? {} : { cookie: info.cookie }), [MUX_PROXY_HEADER]: muxProxyNonce },
+          headers: { host: info.host, ...(info.cookie === undefined ? {} : { cookie: info.cookie }), [MUX_PROXY_HEADER]: muxProxyNonce },
         })
       } catch (error) {
         correlations.delete(correlation)
