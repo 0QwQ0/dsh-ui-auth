@@ -114,7 +114,7 @@ ctx.effect(() => auth.registerPolicy('my-plugin-carrier', {
 **已知限制（影响 0.7.1 及更早的已发布版本）**：`stream` section 在 **0.7.0 与 0.7.1 上不会被查询**——
 0.7.0 起 `handleUpgrade` 已是死代码，0.7.1 删除自研 mux 后其唯一调用点也消失，于是为流式端点登记的
 放行/裁剪会被**静默忽略**（`http`/`rpc`/`remote`/`upgrade` 不受影响）。`main` 已修复（透明代理的
-打开授权与逐帧投影都会先查 `stream` 规则），但**尚未发版**；在那之前请勿依赖 `stream` 登记，
+打开授权与逐帧投影都会先查 `stream` 规则），修复包含在 **0.7.2**；旧版本请勿依赖 `stream` 登记，
 流式端点的归属过滤由本插件内置策略承担。
 
 **#3 的端到端复验（2026-10-16，报告者环境）**：在真实 DSH `0.2.0-rc.2` + 真实
@@ -185,3 +185,9 @@ v0.6.x 时代的自研 mux（`gateUp` 内的 `WebSocketServer`）与 0.2.0 客�
 自研 mux 那套（`typertGateway.wireStream` / `MAX_STREAMS` / `StreamWork`）已作为死代码删除。
 排障退避：`DSH_AUTH_MUX_PROXY=0`（退避后 Issue #6 会重现）。
 验证：`PROBE_URL=http://127.0.0.1:<port> npm run test:mux:leak`（双身份真实浏览器 A/B）。
+
+### 附件响应（0.7.2）
+
+`workspaceFiles/readBytes` 的 `multipart/form-data` 响应会先解析 `metadata` 中的 Remote 信封，完成内置结果投影与登录态复核后再发送附件；请求仍须通过会话归属授权。未知 multipart 端点、缺失/畸形 metadata、未审查的成功响应类型均 fail-closed（502）。
+
+如果用 `registerPolicy({rpc})` 接管该端点，multipart 响应同样拒绝：普通 JSON `project()` 不能证明独立附件已被同步裁剪。需要读取二进制文件时请保留该端点的内置授权/投影路径。
