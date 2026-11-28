@@ -19,6 +19,7 @@
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
+| `DSH_AUTH_DATA_DIR` | 进程 cwd | 可选的插件状态目录（相对路径相对启动 cwd）；未设置保留旧布局。设置后自动创建，创建失败保持 fail-closed，不回退 cwd。 |
 | `DSH_AUTH_MAX_FAILS` | `5` | 单来源连续登录失败锁定阈值（正整数；非法值回退默认） |
 | `DSH_AUTH_LOCK_MS` | `30000` | 锁定持续时间（毫秒） |
 | `DSH_AUTH_TRUST_PROXY` | 关 | 设为 `1`/`true`/`yes` 时信任 `X-Forwarded-For`（**取最右**，即最近一层受信代理追加的地址，客户端无法伪造）与 `X-Forwarded-Proto`（用于 Secure Cookie）。**仅在 HTTPS 反向代理之后开启**；默认不信任，避免未配置代理时伪造请求头绕过或污染限流 |
@@ -60,6 +61,15 @@ export DSH_AUTH_MAX_FAILS=10 DSH_AUTH_LOCK_MS=60000 DSH_AUTH_TRUST_PROXY=1
 | 分享配置（服务端主密钥托管） | 同上，键 `dsh-auth/profile-shared-<uid>` | 高 |
 | 初始管理员口令 | 进程工作目录 `dsh-ui-auth-bootstrap.txt` | **极高，用后即删** |
 | 会话恢复 | 会话文件（登出即失效） | 高 |
+
+### 独立状态目录（0.7.2 起）
+
+设置 `DSH_AUTH_DATA_DIR` 可将会话、审计、引导文件及初始化日志统一放入指定目录；凭据仍由宿主 credentials 服务管理。
+默认不设置时沿用进程 cwd，不自动迁移旧文件。新目录以 0700 模式创建（Windows 请同时设置适当 ACL）；已有目录权限不自动更改。
+多实例应使用不同目录；共享 `DSH_HOME` 或状态目录不提供多进程并发写保护。
+
+迁移：停止实例，备份旧 cwd 中的 `dsh-ui-auth-sessions.json`、`dsh-ui-auth-audit.jsonl`、`dsh-ui-auth-bootstrap.txt`（若仍存在）及 `dsh-ui-auth-init.log`，将其搬到目标目录，设置环境变量后重启。保持原 `DSH_HOME` 可保持 Cookie 名一致。
+回滚：先停机，将目标目录中的最新文件搬回旧 cwd，再取消环境变量并启动。不要同时启动新旧实例或合并不同实例的会话文件。新目录为空时不会读取旧 cwd 的会话。
 
 ## 4. 备份与恢复
 

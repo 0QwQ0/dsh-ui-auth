@@ -12,6 +12,8 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto'
+import { resolve as resolvePath, join as joinPath } from 'node:path'
+import { mkdir } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse, Server } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { createModernGateway } from './modern-gateway.js'
@@ -399,6 +401,10 @@ export function clientIp(req: ClientIpRequest | undefined, trustProxy: boolean):
 }
 
 export function apply(ctx: CordisContext): void {
+    // Capture once per instance. An explicit directory never falls back to cwd.
+    const configuredDataDir = process.env.DSH_AUTH_DATA_DIR?.trim()
+    const dataDir = configuredDataDir ? resolvePath(configuredDataDir) : undefined
+    const stateFile = (filename: string): string => dataDir === undefined ? filename : joinPath(dataDir, filename)
     // ============ 配置常量 ============
     // 会话密钥注册表：KEK 只属于本次挂载的会话，绝不跨挂载泄漏（每次 apply 都是新的）。
     const kekRegistry = new KekRegistry()
@@ -901,7 +907,7 @@ const COOKIE_NAME = 'dsh_auth_' + (() => {
         const data: SessionsFile = { v: 1, sessions: {} }
         for (const [token, s] of state.sessions) data.sessions[token] = { username: s.username, expiresAt: s.expiresAt }
         sessionsDirty = false
-        fsSvc.resolve(SESSIONS_FILE).then((t) => fsSvc.writeText(t, JSON.stringify(data))).catch((err) => console.error('[dsh-ui-auth] 写入会话文件失败: ' + String(err)))
+        fsSvc.resolve(stateFile(SESSIONS_FILE)).then((t) => fsSvc.writeText(t, JSON.stringify(data))).catch((err) => console.error('[dsh-ui-auth] 写入会话文件失败: ' + String(err)))
       } catch (err) { /* ignore */ }
     }
 
@@ -909,7 +915,7 @@ const COOKIE_NAME = 'dsh_auth_' + (() => {
       try {
         const fsSvc: FsService | undefined = ctx.get('fs')
         if (fsSvc === undefined) return
-        const t = await fsSvc.resolve(SESSIONS_FILE)
+        const t = await fsSvc.resolve(stateFile(SESSIONS_FILE))
         const text = await fsSvc.readText(t)
         const data: SessionsFile = JSON.parse(text)
         if (data === null || typeof data !== 'object' || data.v !== 1 || typeof data.sessions !== 'object' || data.sessions === null) return
@@ -2547,7 +2553,7 @@ const COOKIE_NAME = 'dsh_auth_' + (() => {
           try {
             const fsSvc: FsService | undefined = ctx.get('fs')
             if (fsSvc !== undefined) {
-              const target = await fsSvc.resolve('dsh-ui-auth-bootstrap.txt')
+              const target = await fsSvc.resolve(stateFile('dsh-ui-auth-bootstrap.txt'))
               if (typeof fsSvc.unlink === 'function') {
                 await fsSvc.unlink(target)
               } else if (typeof fsSvc.processPath === 'function') {
@@ -2799,7 +2805,7 @@ const COOKIE_NAME = 'dsh_auth_' + (() => {
         try {
           const fsSvc: FsService | undefined = ctx.get('fs')
           if (fsSvc === undefined) return
-          const t = await fsSvc.resolve(AUDIT_FILE)
+          const t = await fsSvc.resolve(stateFile(AUDIT_FILE))
           let old = ''
           try { old = await fsSvc.readText(t) } catch (err) { /* 首次写入：文件不存在 */ }
           await fsSvc.writeText(t, old + JSON.stringify(entry) + '\n')
@@ -2814,7 +2820,7 @@ const COOKIE_NAME = 'dsh_auth_' + (() => {
       try {
         const fsSvc: FsService | undefined = ctx.get('fs')
         if (fsSvc === undefined) return
-        fsSvc.resolve('dsh-ui-auth-init.log').then((t) => fsSvc.writeText(t, msg + '\n', undefined)).catch(() => {})
+        fsSvc.resolve(stateFile('dsh-ui-auth-init.log')).then((t) => fsSvc.writeText(t, msg + '\n', undefined)).catch(() => {})
       } catch (err) { /* ignore */ }
     }
 
@@ -2849,9 +2855,9 @@ const COOKIE_NAME = 'dsh_auth_' + (() => {
             '',
             '请在登录后立即修改该密码，然后删除本文件。',
           ]
-          const target = await fsSvc.resolve('dsh-ui-auth-bootstrap.txt')
+          const target = await fsSvc.resolve(stateFile('dsh-ui-auth-bootstrap.txt'))
           await fsSvc.writeText(target, lines.join('\n'))
-          console.log('[dsh-ui-auth] 初始账号已写入文件 dsh-ui-auth-bootstrap.txt（进程工作目录）')
+          console.log('[dsh-ui-auth] 初始账号已写入文件 ' + stateFile('dsh-ui-auth-bootstrap.txt'))
         }
       } catch (err) {
         console.error('[dsh-ui-auth] 写入初始账号文件失败: ' + String(err))
@@ -2860,6 +2866,7 @@ const COOKIE_NAME = 'dsh_auth_' + (() => {
 
     async function init(): Promise<void> {
       try {
+        if (dataDir !== undefined) await mkdir(dataDir, { recursive: true, mode: 0o700 })
         // 启动顺序竞态：等 credentials 服务就绪（最多 10 秒）再加载用户表
         await acquireCredentials(10000)
         if (store !== null) {
