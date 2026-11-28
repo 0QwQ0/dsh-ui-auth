@@ -43,7 +43,7 @@
 | `registerPolicy({stream})` 孤儿化修复 | ✅（**未发版**） | `9ad7ea7` | 0.7.0/0.7.1 上 `stream` 规则无调用点（静默失效）；现已接回代理的两个方向 + 五 section 契约回归。**运维含义：0.7.1 上请勿依赖 `stream` 登记**，已在 README/兼容性文档标注为已知限制 |
 
 > **未发版状态（截至本行）**：`main` 上 `9ad7ea7` 及之后的改动**尚未进入任何发行版**（npm `latest` 仍是 0.7.1）；
-> 所有者决定**暂不发布下一版**，因此 `stream` 登记的失效属于"已修复但未生效"，请按上表备注对待。
+> 2026-11-28：以上增量已纳入 v0.7.2 发布准备，发布状态以 GitHub Release 为准。
 
 **接续约定**：每个增量都必须 `tsc` + `build` + `npm test` 全绿后提交；`main` 只在全部完成且所有者确认发版后才合并。
 `npm test` 当前包含：security-suite **168/168**（含 `WS-ISO` 20 项、`AUTHZ` 18 项）、host-smoke、login-page-check、modern-policy、profile-crypto、profile-envelope、profile-service、user-routes、profile-keys、i18n。
