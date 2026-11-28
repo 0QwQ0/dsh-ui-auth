@@ -141,6 +141,76 @@ check('2FA toggle is a switch (not checkbox)', /className: ['"]switch['"]/.test(
   check('2FA switch label reflects the factor in use (动态码 / 通行密钥)', code.includes('登录需密码 + 动态码') && code.includes('登录需密码 + 通行密钥'))
   check('Passkey login reminder only when no factor exists', code.includes('passkeyCount') && code.includes('totpEnabled !== true'))
 
+  // Issue #11: exercise the real built client observer with a minimal DOM.
+  // Host dialogs must stay outside its roots; React-style updates to Text nodes
+  // and attributes inside .dshua must become the new translation baseline.
+  {
+    const hostText = { nodeValue: '加载中' }
+    const ownText = { nodeValue: '用户名' }
+    const attrs = new Map([['placeholder', '邮箱'], ['aria-label', '用户名']])
+    const ownField = {
+      hasAttribute: (name) => attrs.has(name),
+      getAttribute: (name) => attrs.get(name) ?? null,
+      setAttribute: (name, value) => attrs.set(name, value),
+    }
+    const ownRoot = { textNodes: [ownText], querySelectorAll: () => [ownField] }
+    const hostRoot = { textNodes: [hostText], querySelectorAll: () => [] }
+    const observers = []
+    const queriedRoots = []
+    global.NodeFilter = { SHOW_TEXT: 4 }
+    global.MutationObserver = class {
+      constructor(callback) { observers.push(callback) }
+      observe() {}
+    }
+    global.document = {
+      body: {}, documentElement: { lang: 'zh' }, head: { appendChild() {} },
+      querySelector: () => null,
+      createElement: () => ({ dataset: {}, textContent: '' }),
+      createTreeWalker(root) {
+        let index = 0
+        return { nextNode: () => root.textNodes[index++] ?? null }
+      },
+      querySelectorAll(selector) {
+        queriedRoots.push(selector)
+        return selector.includes('[role=dialog]') ? [ownRoot, hostRoot] : selector === '.dshua' ? [ownRoot] : []
+      },
+    }
+    let onLocaleChange
+    const localeCtx = makeCtx().ctx
+    localeCtx.on = (name, callback) => { if (name === 'locale/change') onLocaleChange = callback }
+    exp.apply(localeCtx)
+    check('locale observer installed', observers.length === 1 && typeof onLocaleChange === 'function')
+    check('locale observer scans only plugin roots', queriedRoots.length > 0 && queriedRoots.every((s) => s === '.dshua'))
+
+    // Simulate React mutating existing nodes after the observer's first pass.
+    hostText.nodeValue = '工作区内修改'
+    ownText.nodeValue = '邮箱'
+    attrs.set('placeholder', '用户名')
+    attrs.set('aria-label', '邮箱')
+    observers[0]()
+    check('host dialog update survives observer', hostText.nodeValue === '工作区内修改')
+    check('plugin text update survives observer in zh', ownText.nodeValue === '邮箱')
+    check('plugin attribute updates survive observer in zh', attrs.get('placeholder') === '用户名' && attrs.get('aria-label') === '邮箱')
+
+    global.document.documentElement.lang = 'en'
+    onLocaleChange()
+    check('updated plugin text translates to en', ownText.nodeValue === 'Email')
+    check('updated attributes translate to en', attrs.get('placeholder') === 'Username' && attrs.get('aria-label') === 'Email')
+    check('host dialog is still untouched in en', hostText.nodeValue === '工作区内修改')
+
+    ownText.nodeValue = '解锁'
+    attrs.set('placeholder', '删除')
+    observers[0]()
+    observers[0]() // our own translated write must not replace the original
+    check('external plugin updates translate without snapping back', ownText.nodeValue === 'Unlock' && attrs.get('placeholder') === 'Delete')
+    global.document.documentElement.lang = 'zh'
+    onLocaleChange()
+    check('locale switch restores latest originals', ownText.nodeValue === '解锁' && attrs.get('placeholder') === '删除')
+    delete global.document
+    delete global.NodeFilter
+    delete global.MutationObserver
+  }
+
   console.log(failures === 0 ? '\nCLIENT BUNDLE SMOKE TEST PASSED' : `\n${failures} FAILURES`)
   process.exit(failures === 0 ? 0 : 1)
 })()

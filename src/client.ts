@@ -1420,17 +1420,26 @@
 		var localeRef: LocaleService | undefined
 		var TRANSLATED_ATTRS = ['placeholder', 'aria-label', 'title']
 		var textOriginals = new WeakMap<Text, string>()
+		var textLastApplied = new WeakMap<Text, string>()
 		var attrOriginals = new WeakMap<Element, Record<string, string>>()
+		var attrLastApplied = new WeakMap<Element, Record<string, string>>()
 
 		function translateInside(root: Node): void {
 			if (typeof document === 'undefined' || typeof NodeFilter === 'undefined') return
 			var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
 			var node = walker.nextNode() as Text | null
 			while (node !== null) {
+				var current = node.nodeValue ?? ''
 				var original = textOriginals.get(node)
-				if (original === undefined) { original = node.nodeValue ?? ''; textOriginals.set(node, original) }
+				var lastApplied = textLastApplied.get(node)
+				// React may update an existing Text node. Only our own last value is safe to reuse as a baseline.
+				if (original === undefined || (lastApplied !== undefined && current !== lastApplied)) {
+					original = current
+					textOriginals.set(node, original)
+				}
 				var next = activeLocale === 'en' ? translatePhrase('en', original) : original
-				if (node.nodeValue !== next) node.nodeValue = next
+				if (current !== next) node.nodeValue = next
+				textLastApplied.set(node, next)
 				node = walker.nextNode() as Text | null
 			}
 			var element = root as Element
@@ -1439,23 +1448,29 @@
 			for (var i = 0; i < fields.length; i++) {
 				var field = fields[i] as HTMLElement
 				var store = attrOriginals.get(field) ?? {}
+				var written = attrLastApplied.get(field) ?? {}
 				for (var j = 0; j < TRANSLATED_ATTRS.length; j++) {
 					var name = TRANSLATED_ATTRS[j]
 					if (typeof field.getAttribute !== 'function' || !field.hasAttribute(name)) continue
-					if (store[name] === undefined) store[name] = field.getAttribute(name) ?? ''
+					var currentAttr = field.getAttribute(name) ?? ''
+					if (store[name] === undefined || (written[name] !== undefined && currentAttr !== written[name])) {
+						store[name] = currentAttr
+					}
 					var value = activeLocale === 'en' ? translatePhrase('en', store[name]) : store[name]
-					if (field.getAttribute(name) !== value) field.setAttribute(name, value)
+					if (currentAttr !== value) field.setAttribute(name, value)
+					written[name] = value
 				}
 				attrOriginals.set(field, store)
+				attrLastApplied.set(field, written)
 			}
 		}
 
-		/** 只处理我们自己的区域（面板与设置对话框），不碰宿主其它界面。 */
+		/** 只处理插件自己的区域；宿主对话框会动态更新，不应被插件观察器改写。 */
 		function translateOurDom(): void {
 			if (typeof document === 'undefined') return
 			// 即时重新探测：DSH 的 locale 同步可能晚于本插件的 apply，缓存会被一次早到的 zh 覆盖。
 			try { activeLocale = detectLocale() } catch (error) { /* 保持上一次的值 */ }
-			var roots = document.querySelectorAll('.dshua, [role=dialog]')
+			var roots = document.querySelectorAll('.dshua')
 			for (var i = 0; i < roots.length; i++) translateInside(roots[i])
 		}
 
@@ -1466,7 +1481,7 @@
 			var attach = function (): void {
 				if (document.body === null || document.body === undefined) { setTimeout(attach, 200); return }
 				new MutationObserver(function () { translateOurDom() })
-					.observe(document.body, { childList: true, subtree: true, characterData: true })
+					.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: TRANSLATED_ATTRS })
 				translateOurDom()
 			}
 			attach()
